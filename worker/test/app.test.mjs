@@ -15,7 +15,8 @@ globalThis.fetch = async (url) => {
   if (url.includes("/historyRaw")) return json({ success: true, dataList: [] });
   throw new Error("unexpected " + url);
 };
-const env = { KV, TELEGRAM_BOT_TOKEN: "123:ABC", TELEGRAM_CHAT_ID: "42", DEYE_CLOUD_DEVICE_SN: "sn" };
+const env = { KV, TELEGRAM_BOT_TOKEN: "123:ABC", TELEGRAM_CHAT_ID: "42", DEYE_CLOUD_DEVICE_SN: "sn",
+              APP_TOKEN: "app-secret-token-1234567890" };
 
 function initData(userId, botToken = env.TELEGRAM_BOT_TOKEN, authDate = Math.floor(Date.now() / 1000)) {
   const fields = { auth_date: String(authDate), query_id: "q", user: JSON.stringify({ id: userId, first_name: "D" }) };
@@ -40,4 +41,6 @@ const body = await r.json();
 assert.equal(body.live.gridOn, true);
 assert.equal(body.live.soc, 90);
 assert.equal(body.data.week.count, 2);
+assert.equal((await get("/api/data", { Authorization: "Bearer wrong-token-0000000000000" })).status, 403);
+assert.equal((await get("/api/data", { Authorization: "Bearer app-secret-token-1234567890" })).status, 200);
 console.log("app tests passed");

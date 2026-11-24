@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>DeyeAPIBase</key>
+	<string>$(DEYE_API_BASE)</string>
+	<key>DeyeAppToken</key>
+	<string>$(DEYE_APP_TOKEN)</string>
+</dict>
+</plist>

@@ -6,3 +6,8 @@ __pycache__/
 data/
 *.sqlite3
 *.log
+ios/Config/Secrets.xcconfig
+ios/build/
+*.xcuserstate
+xcuserdata/
+DerivedData/

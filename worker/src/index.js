@@ -385,8 +385,19 @@ async function verifyInitData(initData, env) {
   return !!user && String(user.id) === String(env.TELEGRAM_CHAT_ID);
 }
 
+// The iOS app has no Telegram signature: it sends a long random APP_TOKEN instead.
+function appTokenOk(request, env) {
+  const auth = request.headers.get("Authorization") || "";
+  const given = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const want = env.APP_TOKEN || "";
+  if (!want || given.length !== want.length) return false;
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ given.charCodeAt(i);
+  return diff === 0;
+}
+
 async function dashboardData(request, env) {
-  if (!(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
+  if (!appTokenOk(request, env) && !(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
     return new Response("forbidden", { status: 403 });
   }
   const [live, cache] = await Promise.all([

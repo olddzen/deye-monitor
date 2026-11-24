@@ -1,0 +1,8 @@
+// Shared build settings. API base and app token come from the gitignored Secrets.xcconfig.
+#include? "Secrets.xcconfig"
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
+SWIFT_VERSION = 5.0
+TARGETED_DEVICE_FAMILY = 1
+MARKETING_VERSION = 1.0
+CURRENT_PROJECT_VERSION = 1
+CODE_SIGN_STYLE = Automatic
