@@ -35,7 +35,7 @@ Deye ── Wi-Fi стік (Solarman V5, порт 8899) ──► deye-monitor (
 ## Запуск
 
 ```bash
-git clone https://github.com/<you>/deye-monitor.git && cd deye-monitor
+git clone https://github.com/olddzen/deye-monitor.git && cd deye-monitor
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env   # заповни DEYE_LOGGER_IP, DEYE_LOGGER_SERIAL, TELEGRAM_BOT_TOKEN
 ```
