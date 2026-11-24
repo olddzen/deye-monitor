@@ -1,0 +1,16 @@
+# Copy to /etc/systemd/system/, adjust User and paths, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now deye-monitor
+[Unit]
+Description=Deye inverter monitor (Telegram alerts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/deye-monitor
+ExecStart=/home/pi/deye-monitor/.venv/bin/python -m deye_monitor run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
