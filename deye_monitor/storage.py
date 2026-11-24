@@ -35,6 +35,16 @@ POINT_COLUMNS = ("grid_voltage", "grid_freq", "grid_power", "load_power", "soc",
 Outage = Tuple[float, Optional[float]]
 
 
+class _Rows(list):
+    """Rows fetched while holding the lock (a live cursor must not be read from another thread)."""
+
+    def fetchone(self):
+        return self[0] if self else None
+
+    def fetchall(self):
+        return list(self)
+
+
 class Storage:
     def __init__(self, path: str):
         if path != ":memory:":
@@ -43,12 +53,16 @@ class Storage:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript(SCHEMA)
+            cols = [r[1] for r in self._db.execute("PRAGMA table_info(outages)")]
+            if "uncertain" not in cols:  # migration: outage edges next to a hole in Deye's data
+                self._db.execute("ALTER TABLE outages ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0")
+                self._db.commit()
 
-    def _exec(self, sql: str, args: tuple = ()) -> sqlite3.Cursor:
+    def _exec(self, sql: str, args: tuple = ()) -> _Rows:
         with self._lock:
-            cur = self._db.execute(sql, args)
+            rows = _Rows(self._db.execute(sql, args).fetchall())
             self._db.commit()
-            return cur
+            return rows
 
     # --- key/value ---
     def get_state(self, key: str) -> Optional[str]:
@@ -85,9 +99,14 @@ class Storage:
             "SELECT start_ts, end_ts FROM outages WHERE start_ts < ? AND (end_ts IS NULL OR end_ts > ?) "
             "ORDER BY start_ts", (end, start)).fetchall()
 
-    def recent_outages(self, limit: int = 10) -> List[Outage]:
-        return self._exec("SELECT start_ts, end_ts FROM outages ORDER BY start_ts DESC LIMIT ?",
+    def recent_outages(self, limit: int = 10) -> List[Tuple[float, Optional[float], int]]:
+        return self._exec("SELECT start_ts, end_ts, uncertain FROM outages ORDER BY start_ts DESC LIMIT ?",
                           (limit,)).fetchall()
+
+    def uncertain_outages_between(self, start: float, end: float) -> List[Outage]:
+        return self._exec(
+            "SELECT start_ts, end_ts FROM outages WHERE uncertain=1 AND start_ts < ? "
+            "AND (end_ts IS NULL OR end_ts > ?) ORDER BY start_ts", (end, start)).fetchall()
 
     # --- samples / events ---
     def add_sample(self, r) -> None:
@@ -128,12 +147,14 @@ class Storage:
         names = ("ts",) + POINT_COLUMNS
         return [dict(zip(names, row)) for row in cur.fetchall()]
 
-    def replace_outages(self, outages: List[Outage], since: float) -> None:
-        """Replace stored outages that start at/after `since` with `outages` (derived from points)."""
+    def replace_outages(self, outages: List[tuple], since: float) -> None:
+        """Replace stored outages that start at/after `since` (and any open one) with `outages`
+        derived from points: (start, end) or (start, end, uncertain)."""
+        rows = [(o[0], o[1], int(bool(o[2])) if len(o) > 2 else 0)
+                for o in outages if o[0] >= since or o[1] is None]
         with self._lock:
             self._db.execute("DELETE FROM outages WHERE start_ts >= ? OR end_ts IS NULL", (since,))
-            self._db.executemany("INSERT INTO outages(start_ts, end_ts) VALUES(?, ?)",
-                                 [o for o in outages if o[0] >= since or o[1] is None])
+            self._db.executemany("INSERT INTO outages(start_ts, end_ts, uncertain) VALUES(?, ?, ?)", rows)
             self._db.commit()
 
     # --- Deye alerts ---

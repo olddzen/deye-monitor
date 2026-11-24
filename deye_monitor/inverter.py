@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, asdict, field
-from typing import List
+from typing import List, Optional
 
 
 RUN_STATES = {0: "Standby", 1: "Self-check", 2: "Normal", 3: "Alarm", 4: "Fault"}
@@ -41,7 +41,7 @@ class Reading:
     grid_power: int
     load_power: int
     pv_power: int
-    soc: int
+    soc: Optional[int]  # None: BMS not reporting
     battery_voltage: float
     battery_power: int
     run_state: int

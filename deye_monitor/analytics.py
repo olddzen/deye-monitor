@@ -12,13 +12,17 @@ Outage = Tuple[float, Optional[float]]
 MAX_GAP = 1200  # s; a longer hole in the data is "no data", not a measurement
 
 
-def derive_outages(points: Sequence[dict], threshold: float, max_gap: int = MAX_GAP) -> List[Outage]:
+def derive_outages(points: Sequence[dict], threshold: float, max_gap: int = MAX_GAP,
+                   detailed: bool = False) -> list:
     """Outages from grid-voltage points. Edges are placed halfway between the last-on and first-off
-    points (±2.5 min at Deye's 5-min resolution); a trailing outage stays open (end None)."""
-    out: List[Outage] = []
+    points (±2.5 min at Deye's 5-min resolution); a trailing outage stays open (end None).
+    When an edge borders a hole in the data (> max_gap) the real outage may be longer: only the
+    confirmed part is counted, and detailed=True adds an `uncertain` flag: (start, end, uncertain)."""
+    out: list = []
     prev_ts: Optional[float] = None
     prev_on: Optional[bool] = None
     start: Optional[float] = None
+    unsure = False
     for p in points:
         v = p.get("grid_voltage")
         if v is None:
@@ -26,16 +30,19 @@ def derive_outages(points: Sequence[dict], threshold: float, max_gap: int = MAX_
         ts, on = float(p["ts"]), v >= threshold
         gap = ts - prev_ts if prev_ts is not None else None
         if prev_on is True and not on:
-            start = prev_ts + gap / 2 if gap <= max_gap else ts
+            start, unsure = (prev_ts + gap / 2, False) if gap <= max_gap else (ts, True)
         elif prev_on is False and on and start is not None:
-            end = prev_ts + gap / 2 if gap <= max_gap else prev_ts + 300
-            out.append((start, end))
+            if gap <= max_gap:
+                end = prev_ts + gap / 2
+            else:
+                end, unsure = prev_ts + 300, True
+            out.append((start, end, unsure) if detailed else (start, end))
             start = None
         elif prev_on is None and not on:
-            start = ts
+            start, unsure = ts, True
         prev_ts, prev_on = ts, on
     if start is not None:
-        out.append((start, None))
+        out.append((start, None, unsure) if detailed else (start, None))
     return out
 
 

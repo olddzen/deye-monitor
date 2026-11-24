@@ -1,6 +1,7 @@
 """Core logic: turn raw inverter readings into a few meaningful events."""
 from __future__ import annotations
 
+import html
 import json
 import logging
 import time
@@ -41,6 +42,10 @@ class GridDetector:
             self.state, self._pending, self._count = on, None, 0
             return on
         return None
+
+
+def soc_text(r: Reading) -> str:
+    return f"{r.soc}%" if r.soc is not None else "немає даних від BMS"
 
 
 class Monitor:
@@ -85,7 +90,9 @@ class Monitor:
         try:
             reading = self.reader.read()
         except Exception as exc:  # network hiccups are normal for Wi-Fi sticks
-            log.warning("read failed: %s", exc)
+            # GitHub Actions logs are public: stale data would hint that the flat has no power/internet
+            level = logging.DEBUG if type(exc).__name__ == "StaleData" else logging.WARNING
+            log.log(level, "read failed: %s", exc)
             self._on_unreachable()
             return
         self.handle(reading)
@@ -109,7 +116,7 @@ class Monitor:
         self.db.upsert_points([{
             "ts": int(r.ts), "grid_voltage": r.grid_voltage, "grid_freq": r.grid_freq or None,
             "grid_power": r.grid_power, "load_power": r.load_power,
-            "soc": r.soc if r.soc > 0 else None, "battery_power": r.battery_power if r.soc > 0 else None}])
+            "soc": r.soc or None, "battery_power": r.battery_power if r.soc else None}])
         if now - self.last_sample >= self.cfg.sample_every:
             self.db.add_sample(r)
             self.db.prune(now - self.cfg.keep_days * 86400)
@@ -122,7 +129,7 @@ class Monitor:
             self.db.set_state("grid_on", "1" if self.detector.state else "0")
             if not self.detector.state:
                 self.db.open_outage(r.ts)  # started while already off: approximate start
-            log.info("initial grid state: %s", "on" if self.detector.state else "off")
+            log.debug("initial grid state: %s", "on" if self.detector.state else "off")
             return
         if changed is None:
             return
@@ -132,25 +139,25 @@ class Monitor:
             started = self.db.close_outage(r.ts)
             took = f"\nНе було: <b>{fmt_duration(r.ts - started)}</b>" if started else ""
             self.soc_fired.clear()
-            self._send(r.ts, "grid_on", f"💡 <b>Світло дали</b> о {when}{took}\n🔋 Батарея: {r.soc}%")
+            self._send(r.ts, "grid_on", f"💡 <b>Світло дали</b> о {when}{took}\n🔋 Батарея: {soc_text(r)}")
         else:
             prev_end = self.db.last_outage_end()
             self.db.open_outage(r.ts)
             self.db.set_state("live_off_at", str(r.ts))
             was = f"\nБуло: {fmt_duration(r.ts - prev_end)}" if prev_end else ""
             self._send(r.ts, "grid_off", f"🔌 <b>Світло вимкнули</b> о {when}{was}\n"
-                                         f"🔋 Батарея: {r.soc}% · навантаження {r.load_power} Вт")
+                                         f"🔋 Батарея: {soc_text(r)} · навантаження {r.load_power} Вт")
 
     def _check_battery(self, r: Reading) -> None:
-        if self.detector.state:
+        if self.detector.state or r.soc is None:
             return
         for level in self.cfg.soc_alerts:  # sorted high → low
             if r.soc <= level and level not in self.soc_fired:
                 self.soc_fired.update(x for x in self.cfg.soc_alerts if x >= level)
                 left = ""
                 if r.battery_power > 50:
-                    # rough: 11.8 kWh pack; Deye default discharge cut-off ~ 10–20 %
-                    hours = (r.soc - 10) / 100 * 11800 / r.battery_power
+                    usable_wh = (r.soc - self.cfg.battery_cutoff_soc) / 100 * self.cfg.battery_kwh * 1000
+                    hours = usable_wh / r.battery_power
                     if hours > 0:
                         left = f"\nВистачить приблизно на {fmt_duration(hours * 3600)}"
                 self._send(r.ts, "battery", f"🪫 Батарея {r.soc}% (поріг {level}%){left}")
@@ -181,16 +188,17 @@ class Monitor:
             from .cloud import FAULT_HINTS
             level = {0: "Notice", 1: "Warning", 2: "Failure"}.get(int(a.get("level") or 0), "?")
             name = str(a.get("alertName") or a.get("alertCode") or "?")
-            parts = [f"⚠️ <b>Deye: {name}</b> ({level})"]
+            esc = lambda v: html.escape(str(v), quote=False)  # noqa: E731  Deye text goes into HTML
+            parts = [f"⚠️ <b>Deye: {esc(name)}</b> ({level})"]
             hint = a.get("description") or FAULT_HINTS.get(name.split("_")[0][:3])
             if hint:
-                parts.append(str(hint))
+                parts.append(esc(hint))
             start, end = a.get("alertStartTime"), a.get("alertEndTime")
             if str(a.get("status")) == "0" and start and end:
                 parts.append(f"Тривала {fmt_duration(float(end) - float(start))}, вже минула "
                              f"(о {fmt_time(float(end), self.cfg.tz)})")
             if a.get("solution"):
-                parts.append(f"Що робити: {a['solution']}")
+                parts.append(f"Що робити: {esc(a['solution'])}")
             self._send(r.ts, "fault", "\n".join(parts))
         self.db.set_state("seen_alerts", json.dumps(seen[-300:]))
 
@@ -223,9 +231,10 @@ class Monitor:
             since = self.db.current_outage()
             head = "🔌 Світла немає" + (f" вже {fmt_duration(now - since)}" if since else "")
         bat = "заряджається" if r.battery_power < -20 else "розряджається" if r.battery_power > 20 else "у спокої"
+        battery = f"{r.soc}% ({bat}, {abs(r.battery_power)} Вт)" if r.soc is not None else "немає даних від BMS"
         age = "" if now - r.ts < 120 else f"\n⏱ дані {fmt_duration(now - r.ts)} тому"
         return (f"<b>{head}</b>\n"
-                f"🔋 {r.soc}% ({bat}, {abs(r.battery_power)} Вт)\n"
+                f"🔋 {battery}\n"
                 f"🏠 Навантаження: {r.load_power} Вт\n"
                 f"⚡ Мережа: {r.grid_voltage:.0f} В, {r.grid_freq:.1f} Гц\n"
                 f"⚙️ Інвертор: {r.run_state_name}{age}")
@@ -249,10 +258,15 @@ class Monitor:
             return "Відключень ще не зафіксовано"
         now = self.clock()
         out = ["<b>🕓 Останні відключення</b>"]
-        for start, end in rows:
+        unsure = False
+        for start, end, uncertain in rows:
             span = f"{fmt_time(start, self.cfg.tz, True)} → " + (
                 fmt_time(end, self.cfg.tz) if end else "зараз")
-            out.append(f"{span} · {fmt_duration((end or now) - start)}")
+            mark = "≥ " if uncertain else ""
+            unsure = unsure or bool(uncertain)
+            out.append(f"{span} · {mark}{fmt_duration((end or now) - start)}")
+        if unsure:
+            out.append("\n≥ — поруч була дірка в даних Deye, реальне відключення могло бути довшим")
         return "\n".join(out)
 
     def cmd_week(self):

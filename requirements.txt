@@ -1,4 +1,4 @@
-pysolarmanv5>=3.0,<4
-requests>=2.31
-tzdata
-matplotlib>=3.7
+pysolarmanv5==3.0.6
+requests==2.32.5
+tzdata==2026.6
+matplotlib==3.9.4

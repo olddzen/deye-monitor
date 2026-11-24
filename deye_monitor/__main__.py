@@ -14,11 +14,14 @@ from .monitor import Monitor
 from .storage import Storage
 
 log = logging.getLogger("deye_monitor")
+OUTAGES_VERSION = "2"  # bump to force a full outage rebuild after the derivation logic changes
 
 
 def cloud_client(cfg: Config, db: Optional[Storage] = None):
-    from .cloud import DeyeCloudClient
-    store = (lambda: db.get_state("cloud_token"), lambda v: db.set_state("cloud_token", v)) if db else None
+    from .cloud import DeyeCloudClient, seal, unseal
+    secret = cfg.cloud_app_secret + cfg.cloud_password_sha256
+    store = (lambda: unseal(secret, db.get_state("cloud_token") or ""),
+             lambda v: db.set_state("cloud_token", seal(secret, v))) if db else None
     return DeyeCloudClient(cfg.cloud_url, cfg.cloud_app_id, cfg.cloud_app_secret,
                            cfg.cloud_email, cfg.cloud_password_sha256, token_store=store)
 
@@ -87,10 +90,14 @@ def maintenance(cfg: Config, db: Storage, reader, tg, mon: Optional[Monitor] = N
             prev = db.get_state("history_synced_until")
             reader.sync_history(db, backfill_days=cfg.backfill_days)
             # rebuild from where this sync started (covers backfill chunks), at least the last 3 days
-            since = 0.0 if prev is None else min(float(prev), now) - 3 * 86400
-            pts = db.points_between(since - 86400 if since else 0, now)
-            db.replace_outages(derive_outages(pts, cfg.grid_voltage_min), since)
+            full = prev is None or db.get_state("outages_version") != OUTAGES_VERSION
+            since = 0.0 if full else min(float(prev), now) - 3 * 86400
+            open_start = db.current_outage()  # a long outage may have started before `since`
+            frm = 0.0 if not since else min(since, open_start or since) - 86400
+            pts = db.points_between(frm, now)
+            db.replace_outages(derive_outages(pts, cfg.grid_voltage_min, detailed=True), since)
             db.set_state("outages_rebuilt", str(now))
+            db.set_state("outages_version", OUTAGES_VERSION)
             if mon and mon.detector.state is False and db.current_outage() is None:
                 # live detection saw the outage before it reached Deye's history: keep it open
                 db.open_outage(float(db.get_state("live_off_at") or now))
@@ -137,6 +144,8 @@ def once(cfg: Config) -> None:
     mon.save_state()
     maintenance(cfg, db, reader, tg, mon)
     if tg:
+        if db.get_state("tg_commands") != tg.commands_version() and tg.sync_commands():
+            db.set_state("tg_commands", tg.commands_version())
         try:
             offset = tg.poll_once(mon.handlers(), int(db.get_state("tg_offset") or 0))
             db.set_state("tg_offset", str(offset))

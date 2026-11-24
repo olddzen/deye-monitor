@@ -6,8 +6,11 @@ grid presence falls back to grid power from /station/latest.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -57,6 +60,39 @@ class StaleData(RuntimeError):
 
 class DeyeCloudError(RuntimeError):
     pass
+
+
+def _keystream(key: bytes, nonce: bytes, length: int) -> bytes:
+    out, counter = b"", 0
+    while len(out) < length:
+        out += hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
+        counter += 1
+    return out[:length]
+
+
+def seal(secret: str, plaintext: str) -> str:
+    """Encrypt-then-MAC with stdlib only (HMAC-SHA256 keystream). Used to keep the Deye access
+    token unreadable in the Actions cache; the key comes from the GitHub secrets."""
+    key = hashlib.sha256(b"deye-monitor-token|" + secret.encode()).digest()
+    nonce = os.urandom(16)
+    data = plaintext.encode()
+    ct = bytes(a ^ b for a, b in zip(data, _keystream(key, nonce, len(data))))
+    tag = hmac.new(key, nonce + ct, hashlib.sha256).digest()[:16]
+    return "v1:" + base64.b64encode(nonce + ct + tag).decode()
+
+
+def unseal(secret: str, sealed: str) -> Optional[str]:
+    if not sealed or not sealed.startswith("v1:"):
+        return None
+    try:
+        raw = base64.b64decode(sealed[3:])
+    except ValueError:
+        return None
+    key = hashlib.sha256(b"deye-monitor-token|" + secret.encode()).digest()
+    nonce, ct, tag = raw[:16], raw[16:-16], raw[-16:]
+    if not hmac.compare_digest(tag, hmac.new(key, nonce + ct, hashlib.sha256).digest()[:16]):
+        return None
+    return bytes(a ^ b for a, b in zip(ct, _keystream(key, nonce, len(ct)))).decode()
 
 
 def sha256_hex(password: str) -> str:
@@ -219,7 +255,7 @@ class CloudReader:
         st = self.client.station_latest(self.station_id)
         updated = _parse_time(st.get("lastUpdateTime")) or time.time()
         if time.time() - updated > self.stale_after:
-            raise StaleData(f"last cloud update {int(time.time() - updated)} s ago")
+            raise StaleData("cloud data is stale")
 
         points: Dict[str, Any] = {}
         device: Dict[str, Any] = {}
@@ -242,6 +278,9 @@ class CloudReader:
         if voltage is None:  # fallback: any grid flow means grid is present
             voltage = 230.0 if abs(grid_power) > 5 else 0.0
         updated = max(updated, _parse_time(device.get("collectionTime")) or 0)
+        soc_value = pick("SOC", "batterySOC")
+        bms_temp = _num(points.get("Temperature- Battery"))
+        bms_silent = soc_value <= 0 or (bms_temp is not None and bms_temp <= -50)
 
         return Reading(
             ts=updated,
@@ -250,9 +289,9 @@ class CloudReader:
             grid_power=int(grid_power),
             load_power=int(pick("TotalConsumptionPower", "consumptionPower")),
             pv_power=int(pick("TotalDCInputPower", "generationPower")),
-            soc=int(pick("SOC", "batterySOC")),
+            soc=None if bms_silent else int(soc_value),
             battery_voltage=_num(points.get("BatteryVoltage")) or 0.0,
-            battery_power=int(pick("BatteryPower", "batteryPower")),
+            battery_power=0 if bms_silent else int(pick("BatteryPower", "batteryPower")),
             run_state=2,
             alarms=0,
             faults=0,

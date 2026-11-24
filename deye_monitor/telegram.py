@@ -1,6 +1,8 @@
 """Minimal Telegram Bot API client: send messages and answer a few commands (long polling)."""
 from __future__ import annotations
 
+import hashlib
+import html
 import logging
 import time
 from typing import Callable, Dict, Optional
@@ -57,13 +59,23 @@ class Telegram:
         if not data.get("ok"):
             raise RuntimeError(f"Telegram sendPhoto: {data.get('description')}")
 
-    def serve(self, handlers: Dict[str, Callable[[], str]]) -> None:
-        """Blocking loop answering /commands. Only the configured chat gets answers."""
+    @staticmethod
+    def commands_version() -> str:
+        return hashlib.sha1(repr(sorted(COMMANDS.items())).encode()).hexdigest()[:8]
+
+    def sync_commands(self) -> bool:
+        """Publish the command menu; returns True on success."""
         try:
             self._call("setMyCommands", commands=[{"command": c, "description": d}
                                                   for c, d in COMMANDS.items()])
+            return True
         except Exception as exc:
             log.warning("setMyCommands failed: %s", exc)
+            return False
+
+    def serve(self, handlers: Dict[str, Callable[[], str]]) -> None:
+        """Blocking loop answering /commands. Only the configured chat gets answers."""
+        self.sync_commands()
         offset = 0
         while True:
             try:
@@ -82,6 +94,13 @@ class Telegram:
         return offset
 
     def _handle(self, msg: dict, handlers: Dict[str, Callable[[], object]]) -> None:
+        """Never raises: a message that can't be answered must not block the ones after it."""
+        try:
+            self._handle_unsafe(msg, handlers)
+        except Exception as exc:
+            log.warning("could not answer a command: %s", type(exc).__name__)
+
+    def _handle_unsafe(self, msg: dict, handlers: Dict[str, Callable[[], object]]) -> None:
         chat = (msg.get("chat") or {}).get("id")
         text = (msg.get("text") or "").strip()
         if chat is None or not text.startswith("/"):
@@ -100,8 +119,8 @@ class Telegram:
             try:
                 reply = handler()
             except Exception as exc:
-                log.exception("command %s failed", cmd)
-                reply = f"Помилка: {exc}"
+                log.warning("command %s failed: %s", cmd, type(exc).__name__)
+                reply = f"Помилка: {html.escape(str(exc), quote=False)}"
         if isinstance(reply, tuple):  # (text, png)
             text, png = reply
             if png:

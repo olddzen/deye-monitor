@@ -1,6 +1,7 @@
 """Text + chart reports (weekly, monthly, on demand) and their schedule."""
 from __future__ import annotations
 
+import html
 import logging
 from datetime import datetime, timedelta
 from typing import Callable, List, Optional, Tuple
@@ -55,6 +56,10 @@ def build_report(db: Storage, cfg, start: float, end: float, title: str,
         lines.append(f"🔌 <b>Відключення:</b> {st.count}, без світла {fmt_duration(st.off_seconds)} "
                      f"({st.off_share * 100:.0f}% часу)")
         lines.append(f"найдовше {fmt_duration(st.longest)} · в середньому {fmt_duration(st.average)}")
+        unsure = len(A.clip(db.uncertain_outages_between(start, end), start, end))
+        if unsure:
+            lines.append(f"ℹ️ у {unsure} з {st.count} поруч була дірка в даних Deye: "
+                         f"реальна тривалість могла бути більшою")
         if prev_share >= 0.6 and (prev.count or st.count):
             dh = round((st.off_seconds - prev.off_seconds) / 3600, 1)
             lines.append(f"проти попереднього періоду: {_signed(st.count - prev.count)} відкл., {_signed(dh, ' год')}")
@@ -115,7 +120,7 @@ def build_report(db: Storage, cfg, start: float, end: float, title: str,
 
     # --- alerts
     if alerts:
-        parts = [f"{code} ×{n}" + (f" ({SHORT_HINTS[code]})" if code in SHORT_HINTS else "")
+        parts = [f"{html.escape(code, quote=False)} ×{n}" + (f" ({SHORT_HINTS[code]})" if code in SHORT_HINTS else "")
                  for code, n in alerts.items()]
         lines.append("⚠️ <b>Аварії Deye:</b> " + ", ".join(parts))
     else:
