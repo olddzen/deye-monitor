@@ -19,7 +19,18 @@ CREATE TABLE IF NOT EXISTS samples (
 );
 CREATE INDEX IF NOT EXISTS samples_ts ON samples(ts);
 CREATE TABLE IF NOT EXISTS events (ts REAL NOT NULL, kind TEXT NOT NULL, message TEXT);
+CREATE TABLE IF NOT EXISTS points (
+    ts INTEGER PRIMARY KEY, grid_voltage REAL, grid_freq REAL, grid_power REAL, load_power REAL,
+    soc REAL, battery_power REAL, battery_temp REAL, dc_temp REAL, ac_temp REAL,
+    charge_total REAL, discharge_total REAL
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    alert_id TEXT PRIMARY KEY, name TEXT, level INTEGER, start_ts REAL, end_ts REAL
+);
 """
+
+POINT_COLUMNS = ("grid_voltage", "grid_freq", "grid_power", "load_power", "soc", "battery_power",
+                 "battery_temp", "dc_temp", "ac_temp", "charge_total", "discharge_total")
 
 Outage = Tuple[float, Optional[float]]
 
@@ -94,3 +105,45 @@ class Storage:
 
     def prune(self, before_ts: float) -> None:
         self._exec("DELETE FROM samples WHERE ts < ?", (before_ts,))
+        self._exec("DELETE FROM points WHERE ts < ?", (int(before_ts),))
+
+    # --- 5-minute points (from Deye history or live readings) ---
+    def upsert_points(self, rows: List[dict]) -> int:
+        """rows: {"ts": int, <column>: value, ...}; existing values are kept where the new one is None."""
+        if not rows:
+            return 0
+        cols = ", ".join(POINT_COLUMNS)
+        marks = ", ".join("?" * (len(POINT_COLUMNS) + 1))
+        updates = ", ".join(f"{c}=COALESCE(excluded.{c}, {c})" for c in POINT_COLUMNS)
+        with self._lock:
+            self._db.executemany(
+                f"INSERT INTO points(ts, {cols}) VALUES({marks}) ON CONFLICT(ts) DO UPDATE SET {updates}",
+                [(int(r["ts"]), *(r.get(c) for c in POINT_COLUMNS)) for r in rows])
+            self._db.commit()
+        return len(rows)
+
+    def points_between(self, start: float, end: float) -> List[dict]:
+        cur = self._exec(f"SELECT ts, {', '.join(POINT_COLUMNS)} FROM points WHERE ts >= ? AND ts <= ? "
+                         "ORDER BY ts", (int(start), int(end)))
+        names = ("ts",) + POINT_COLUMNS
+        return [dict(zip(names, row)) for row in cur.fetchall()]
+
+    def replace_outages(self, outages: List[Outage], since: float) -> None:
+        """Replace stored outages that start at/after `since` with `outages` (derived from points)."""
+        with self._lock:
+            self._db.execute("DELETE FROM outages WHERE start_ts >= ? OR end_ts IS NULL", (since,))
+            self._db.executemany("INSERT INTO outages(start_ts, end_ts) VALUES(?, ?)",
+                                 [o for o in outages if o[0] >= since or o[1] is None])
+            self._db.commit()
+
+    # --- Deye alerts ---
+    def upsert_alert(self, alert_id: str, name: str, level: int, start: float, end: Optional[float]) -> bool:
+        """Returns True if the alert was not stored before."""
+        new = self._exec("SELECT 1 FROM alerts WHERE alert_id=?", (alert_id,)).fetchone() is None
+        self._exec("INSERT INTO alerts VALUES(?,?,?,?,?) ON CONFLICT(alert_id) DO UPDATE SET "
+                   "end_ts=excluded.end_ts", (alert_id, name, level, start, end))
+        return new
+
+    def alerts_between(self, start: float, end: float) -> List[Tuple[str, int, float, Optional[float]]]:
+        return self._exec("SELECT name, level, start_ts, end_ts FROM alerts WHERE start_ts >= ? AND start_ts < ? "
+                          "ORDER BY start_ts", (start, end)).fetchall()

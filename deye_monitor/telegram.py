@@ -11,7 +11,10 @@ log = logging.getLogger(__name__)
 
 COMMANDS = {
     "status": "Чи є світло зараз, заряд батареї",
-    "stats": "Статистика відключень",
+    "week": "Звіт за 7 днів з графіком",
+    "month": "Звіт за 30 днів з графіком",
+    "battery": "Батарея: цикли, ємність, розряди",
+    "stats": "Коротка статистика відключень",
     "history": "Останні відключення",
     "errors": "Серйозні помилки інвертора",
 }
@@ -40,6 +43,20 @@ class Telegram:
         self._call("sendMessage", chat_id=target, text=text, parse_mode="HTML",
                    disable_web_page_preview=True)
 
+    def send_photo(self, png: bytes, caption: str = "", chat_id: Optional[int] = None) -> None:
+        target = chat_id or self.chat_id
+        if target is None:
+            return
+        try:
+            resp = requests.post(f"{self.base}/sendPhoto", data={"chat_id": target, "caption": caption,
+                                                                 "parse_mode": "HTML"},
+                                 files={"photo": ("chart.png", png, "image/png")}, timeout=60)
+            data = resp.json()
+        except Exception as exc:
+            raise RuntimeError(f"Telegram sendPhoto: {type(exc).__name__}") from None
+        if not data.get("ok"):
+            raise RuntimeError(f"Telegram sendPhoto: {data.get('description')}")
+
     def serve(self, handlers: Dict[str, Callable[[], str]]) -> None:
         """Blocking loop answering /commands. Only the configured chat gets answers."""
         try:
@@ -64,7 +81,7 @@ class Telegram:
             self._handle(upd.get("message") or {}, handlers)
         return offset
 
-    def _handle(self, msg: dict, handlers: Dict[str, Callable[[], str]]) -> None:
+    def _handle(self, msg: dict, handlers: Dict[str, Callable[[], object]]) -> None:
         chat = (msg.get("chat") or {}).get("id")
         text = (msg.get("text") or "").strip()
         if chat is None or not text.startswith("/"):
@@ -85,4 +102,12 @@ class Telegram:
             except Exception as exc:
                 log.exception("command %s failed", cmd)
                 reply = f"Помилка: {exc}"
+        if isinstance(reply, tuple):  # (text, png)
+            text, png = reply
+            if png:
+                try:
+                    self.send_photo(png, chat_id=chat)
+                except Exception as exc:
+                    log.warning("photo failed: %s", exc)
+            reply = text
         self.send(reply, chat_id=chat)

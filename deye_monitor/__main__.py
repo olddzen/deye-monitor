@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from typing import Optional
 
 from .config import Config
 from .inverter import SimulatedReader, SolarmanReader
@@ -15,19 +16,20 @@ from .storage import Storage
 log = logging.getLogger("deye_monitor")
 
 
-def cloud_client(cfg: Config):
+def cloud_client(cfg: Config, db: Optional[Storage] = None):
     from .cloud import DeyeCloudClient
+    store = (lambda: db.get_state("cloud_token"), lambda v: db.set_state("cloud_token", v)) if db else None
     return DeyeCloudClient(cfg.cloud_url, cfg.cloud_app_id, cfg.cloud_app_secret,
-                           cfg.cloud_email, cfg.cloud_password_sha256)
+                           cfg.cloud_email, cfg.cloud_password_sha256, token_store=store)
 
 
-def make_reader(cfg: Config):
+def make_reader(cfg: Config, db: Optional[Storage] = None):
     if cfg.mode == "simulate":
         return SimulatedReader()
     if cfg.mode == "cloud":
         from .cloud import CloudReader
-        return CloudReader(cloud_client(cfg), cfg.cloud_station_id, cfg.cloud_device_sn,
-                           cfg.cloud_grid_voltage_key, cfg.cloud_stale_after, cfg.alert_min_level)
+        return CloudReader(cloud_client(cfg, db), cfg.cloud_station_id, cfg.cloud_device_sn,
+                           cfg.cloud_grid_voltage_key, cfg.cloud_stale_after, cfg.alert_min_level, db=db)
     return SolarmanReader(cfg.logger_ip, cfg.logger_serial, cfg.logger_port, cfg.slave_id)
 
 
@@ -67,51 +69,80 @@ def cloud_check(cfg: Config) -> None:
         print("Detected grid voltage:", find_grid_voltage(points, cfg.cloud_grid_voltage_key))
 
 
+def _telegram(cfg: Config):
+    if not cfg.tg_token:
+        log.warning("TELEGRAM_BOT_TOKEN not set: notifications go to the log only")
+        return None
+    from .telegram import Telegram
+    return Telegram(cfg.tg_token, cfg.tg_chat_id)
+
+
+def maintenance(cfg: Config, db: Storage, reader, tg, mon: Optional[Monitor] = None) -> None:
+    """History sync (cloud), outage rebuild from 5-min points, scheduled reports. Never raises."""
+    from .analytics import derive_outages
+    from .reports import send_due_reports
+    now = time.time()
+    if cfg.mode == "cloud":
+        try:
+            prev = db.get_state("history_synced_until")
+            reader.sync_history(db, backfill_days=cfg.backfill_days)
+            # rebuild from where this sync started (covers backfill chunks), at least the last 3 days
+            since = 0.0 if prev is None else min(float(prev), now) - 3 * 86400
+            pts = db.points_between(since - 86400 if since else 0, now)
+            db.replace_outages(derive_outages(pts, cfg.grid_voltage_min), since)
+            db.set_state("outages_rebuilt", str(now))
+            if mon and mon.detector.state is False and db.current_outage() is None:
+                # live detection saw the outage before it reached Deye's history: keep it open
+                db.open_outage(float(db.get_state("live_off_at") or now))
+        except Exception as exc:
+            log.warning("history sync failed: %s", exc)
+    synced = float(db.get_state("history_synced_until") or 0)
+    backfill_done = cfg.mode != "cloud" or synced >= now - 3600
+    if tg and backfill_done:
+        try:
+            send_due_reports(db, cfg, now, tg.send, tg.send_photo)
+        except Exception as exc:
+            log.warning("reports failed: %s", exc)
+
+
 def run(cfg: Config) -> None:
     db = Storage(cfg.db_path)
-    tg = None
-    if cfg.tg_token:
-        from .telegram import Telegram
-        tg = Telegram(cfg.tg_token, cfg.tg_chat_id)
-        notify = tg.send
-    else:
-        log.warning("TELEGRAM_BOT_TOKEN not set: notifications go to the log only")
-        notify = lambda text: log.info("NOTIFY: %s", text)  # noqa: E731
-
-    mon = Monitor(cfg, db, make_reader(cfg), notify)
+    tg = _telegram(cfg)
+    notify = tg.send if tg else (lambda text: log.info("NOTIFY: %s", text))
+    reader = make_reader(cfg, db)
+    mon = Monitor(cfg, db, reader, notify)
     if tg:
-        handlers = {"status": mon.cmd_status, "stats": mon.cmd_stats,
-                    "history": mon.cmd_history, "errors": mon.cmd_errors}
-        threading.Thread(target=tg.serve, args=(handlers,), daemon=True, name="telegram").start()
+        threading.Thread(target=tg.serve, args=(mon.handlers(),), daemon=True, name="telegram").start()
 
     log.info("monitoring (%s mode), poll every %ss", cfg.mode, cfg.poll_interval)
+    last_maint = 0.0
     while True:
         started = time.monotonic()
         mon.tick()
+        if time.time() - last_maint >= 600:
+            maintenance(cfg, db, reader, tg, mon)
+            last_maint = time.time()
         time.sleep(max(1.0, cfg.poll_interval - (time.monotonic() - started)))
 
 
 def once(cfg: Config) -> None:
-    """One poll + answer pending bot commands, then exit. For cron / GitHub Actions."""
+    """One poll, history sync, due reports, pending bot commands; then exit. For cron / GitHub Actions."""
     db = Storage(cfg.db_path)
-    tg = None
-    if cfg.tg_token:
-        from .telegram import Telegram
-        tg = Telegram(cfg.tg_token, cfg.tg_chat_id)
+    tg = _telegram(cfg)
     notify = tg.send if tg else (lambda text: log.info("NOTIFY: %s", text))
-    mon = Monitor(cfg, db, make_reader(cfg), notify)
+    reader = make_reader(cfg, db)
+    mon = Monitor(cfg, db, reader, notify)
     mon.load_state()
     mon.tick()
     mon.save_state()
+    maintenance(cfg, db, reader, tg, mon)
     if tg:
-        handlers = {"status": mon.cmd_status, "stats": mon.cmd_stats,
-                    "history": mon.cmd_history, "errors": mon.cmd_errors}
         try:
-            offset = tg.poll_once(handlers, int(db.get_state("tg_offset") or 0))
+            offset = tg.poll_once(mon.handlers(), int(db.get_state("tg_offset") or 0))
             db.set_state("tg_offset", str(offset))
         except Exception as exc:
             log.warning("telegram poll failed: %s", exc)
-    log.info("once: grid=%s", {True: "on", False: "off", None: "?"}[mon.detector.state])
+    log.info("once: done")  # Actions logs are public: don't print power state
 
 
 def main() -> None:

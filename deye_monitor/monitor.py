@@ -106,6 +106,10 @@ class Monitor:
         self._check_battery(r)
         self._check_problems(r)
 
+        self.db.upsert_points([{
+            "ts": int(r.ts), "grid_voltage": r.grid_voltage, "grid_freq": r.grid_freq or None,
+            "grid_power": r.grid_power, "load_power": r.load_power,
+            "soc": r.soc if r.soc > 0 else None, "battery_power": r.battery_power if r.soc > 0 else None}])
         if now - self.last_sample >= self.cfg.sample_every:
             self.db.add_sample(r)
             self.db.prune(now - self.cfg.keep_days * 86400)
@@ -132,6 +136,7 @@ class Monitor:
         else:
             prev_end = self.db.last_outage_end()
             self.db.open_outage(r.ts)
+            self.db.set_state("live_off_at", str(r.ts))
             was = f"\nБуло: {fmt_duration(r.ts - prev_end)}" if prev_end else ""
             self._send(r.ts, "grid_off", f"🔌 <b>Світло вимкнули</b> о {when}{was}\n"
                                          f"🔋 Батарея: {r.soc}% · навантаження {r.load_power} Вт")
@@ -249,6 +254,25 @@ class Monitor:
                 fmt_time(end, self.cfg.tz) if end else "зараз")
             out.append(f"{span} · {fmt_duration((end or now) - start)}")
         return "\n".join(out)
+
+    def cmd_week(self):
+        from .reports import build_report
+        now = self.clock()
+        return build_report(self.db, self.cfg, now - 7 * 86400, now, "Останні 7 днів")
+
+    def cmd_month(self):
+        from .reports import build_report
+        now = self.clock()
+        return build_report(self.db, self.cfg, now - 30 * 86400, now, "Останні 30 днів")
+
+    def cmd_battery(self) -> str:
+        from .reports import battery_report
+        return battery_report(self.db, self.cfg, self.clock())
+
+    def handlers(self):
+        return {"status": self.cmd_status, "stats": self.cmd_stats, "history": self.cmd_history,
+                "errors": self.cmd_errors, "week": self.cmd_week, "month": self.cmd_month,
+                "battery": self.cmd_battery}
 
     def cmd_errors(self) -> str:
         rows = self.db.recent_events(("fault", "fault_clear", "link"), 10)

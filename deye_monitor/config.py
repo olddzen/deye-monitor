@@ -62,6 +62,10 @@ class Config:
     cloud_grid_voltage_key: str = ""
     cloud_stale_after: int = 1200
     alert_min_level: int = 2
+    tariff_uah: float = 4.32
+    battery_kwh: float = 11.8
+    battery_cutoff_soc: float = 10.0
+    backfill_days: int = 45
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -86,7 +90,7 @@ class Config:
             unreachable_alert_after=_int("UNREACHABLE_ALERT_AFTER", 300 if mode == "cloud" else 600),
             soc_alerts=tuple(sorted((int(x) for x in soc.split(",") if x.strip()), reverse=True)),
             sample_every=_int("SAMPLE_EVERY", 300),
-            keep_days=_int("KEEP_SAMPLES_DAYS", 90),
+            keep_days=_int("KEEP_SAMPLES_DAYS", 400),
             tg_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
             tg_chat_id=int(chat) if chat else None,
             db_path=os.environ.get("DB_PATH", "data/deye.sqlite3"),
@@ -101,6 +105,10 @@ class Config:
             cloud_grid_voltage_key=os.environ.get("DEYE_CLOUD_GRID_VOLTAGE_KEY", "").strip(),
             cloud_stale_after=_int("DEYE_CLOUD_STALE_AFTER", 1200),
             alert_min_level=_int("ALERT_MIN_LEVEL", 2),
+            tariff_uah=_float("TARIFF_UAH", 4.32),
+            battery_kwh=_float("BATTERY_KWH", 11.8),
+            battery_cutoff_soc=_float("BATTERY_CUTOFF_SOC", 10.0),
+            backfill_days=_int("BACKFILL_DAYS", 30),
         )
 
     def validate(self) -> None:

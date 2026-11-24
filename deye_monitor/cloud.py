@@ -32,6 +32,25 @@ FAULT_HINTS = {
 }
 
 
+# Deye history point → points-table column. Max 5 points per historyRaw request.
+HISTORY_POINTS = {
+    "GridVoltageL1L2": "grid_voltage", "GridFrequency": "grid_freq", "TotalGridPower": "grid_power",
+    "TotalConsumptionPower": "load_power", "SOC": "soc", "BatteryPower": "battery_power",
+    "Temperature- Battery": "battery_temp", "DC Temperature": "dc_temp", "AC Temperature": "ac_temp",
+    "TotalChargeEnergy": "charge_total", "TotalDischargeEnergy": "discharge_total",
+}
+HISTORY_BATCH = 5
+LIVE_POINTS = {v: k for k, v in HISTORY_POINTS.items()}
+
+
+def clean_point(row: dict) -> dict:
+    """Deye reports battery temp −100 and SOC 0 while the BMS is not talking: that's "no data", not 0 %."""
+    if row.get("battery_temp") is not None and row["battery_temp"] <= -50:
+        for k in ("soc", "battery_power", "battery_temp"):
+            row[k] = None
+    return row
+
+
 class StaleData(RuntimeError):
     pass
 
@@ -68,12 +87,20 @@ def _parse_time(value: Any) -> Optional[float]:
 
 
 class DeyeCloudClient:
-    def __init__(self, base_url: str, app_id: str, app_secret: str, email: str, password_sha256: str):
+    def __init__(self, base_url: str, app_id: str, app_secret: str, email: str, password_sha256: str,
+                 token_store=None):
         self.base = base_url.rstrip("/")
         self.app_id, self.app_secret = app_id, app_secret
         self.email, self.password_sha256 = email, password_sha256
         self._token: Optional[str] = None
         self._token_until = 0.0
+        # optional (get, set) pair to reuse the token across one-shot runs; Deye rate-limits /account/token
+        self._token_store = token_store
+        if token_store:
+            saved = token_store[0]()
+            if saved and ":" in saved:
+                until, token = saved.split(":", 1)
+                self._token, self._token_until = token, float(until)
 
     def _token_value(self) -> str:
         if self._token and time.time() < self._token_until:
@@ -87,9 +114,21 @@ class DeyeCloudClient:
         self._token = token[7:] if token.lower().startswith("bearer ") else token
         ttl = _num(data.get("expiresIn")) or 86400
         self._token_until = time.time() + max(300.0, ttl - 3600)
+        if self._token_store:
+            self._token_store[1](f"{self._token_until}:{self._token}")
         return self._token
 
     def _post(self, path: str, body: dict, params: Optional[dict] = None, auth: bool = True) -> dict:
+        for attempt in range(4):  # Deye answers 1001001 "too many requests" when called in bursts
+            try:
+                return self._post_once(path, body, params, auth)
+            except DeyeCloudError as exc:
+                if "1001001" not in str(exc) or attempt == 3:
+                    raise
+                time.sleep(2 ** (attempt + 1))
+        raise AssertionError("unreachable")
+
+    def _post_once(self, path: str, body: dict, params: Optional[dict], auth: bool) -> dict:
         headers = {"Content-Type": "application/json"}
         if auth:
             headers["Authorization"] = f"Bearer {self._token_value()}"
@@ -118,6 +157,11 @@ class DeyeCloudClient:
     def device_latest(self, sn: str) -> dict:
         items = self._post("/v1.0/device/latest", {"deviceList": [sn]}).get("deviceDataList") or []
         return items[0] if items else {}
+
+    def history_raw(self, sn: str, points: List[str], start: float, end: float) -> List[dict]:
+        return self._post("/v1.0/device/historyRaw", {
+            "deviceSn": sn, "measurePoints": points,
+            "startTimestamp": int(start), "endTimestamp": int(end)}).get("dataList") or []
 
     def alerts(self, sn: str, start: float, end: float) -> List[dict]:
         return self._post("/v1.0/device/alertList", {
@@ -151,8 +195,10 @@ class CloudReader:
                     "і разом з ним інтернету, або стік втратив Wi-Fi.")
 
     def __init__(self, client: DeyeCloudClient, station_id: Optional[int] = None, device_sn: str = "",
-                 grid_voltage_key: str = "", stale_after: int = 1200, alert_min_level: int = 2):
+                 grid_voltage_key: str = "", stale_after: int = 1200, alert_min_level: int = 2, db=None):
         self.client = client
+        self.request_pause = 0.7
+        self.db = db  # when set, alerts are tracked in the DB (alerts table) instead of a look-back window
         self.station_id, self.device_sn = station_id, device_sn
         self.grid_voltage_key = grid_voltage_key
         self.stale_after, self.alert_min_level = stale_after, alert_min_level
@@ -210,8 +256,72 @@ class CloudReader:
             run_state=2,
             alarms=0,
             faults=0,
-            alerts=self._new_alerts(),
+            alerts=self._alerts_for_reading(),
         )
+
+    # ---------- history sync ----------
+    def fetch_points(self, start: float, end: float) -> List[dict]:
+        """5-minute points between start and end, merged across the batched requests."""
+        self._resolve()
+        if not self.device_sn:
+            return []
+        rows: Dict[int, dict] = {}
+        keys = list(HISTORY_POINTS)
+        for i in range(0, len(keys), HISTORY_BATCH):
+            for item in self.client.history_raw(self.device_sn, keys[i:i + HISTORY_BATCH], start, end):
+                ts = int(_parse_time(item.get("time")) or 0)
+                if not ts:
+                    continue
+                row = rows.setdefault(ts, {"ts": ts})
+                for p in item.get("itemList") or []:
+                    col = HISTORY_POINTS.get(str(p.get("key")))
+                    if col:
+                        row[col] = _num(p.get("value"))
+            time.sleep(self.request_pause)
+        return [clean_point(rows[k]) for k in sorted(rows)]
+
+    def sync_history(self, db, backfill_days: int = 45, max_days: int = 10,
+                     now: Optional[float] = None) -> int:
+        """Download points since the last sync, one day per request group. The first backfill
+        (`backfill_days`) is spread over several runs, `max_days` per run, to stay under rate limits."""
+        now = now or time.time()
+        last = _num(db.get_state("history_synced_until"))
+        start = (last - 1800) if last else now - backfill_days * 86400
+        added, cursor, days = 0, start, 0
+        while cursor < now and days < max_days:
+            chunk_end = min(cursor + 86400, now)
+            added += db.upsert_points(self.fetch_points(cursor, chunk_end))
+            cursor, days = chunk_end, days + 1
+            db.set_state("history_synced_until", str(cursor))
+        return added
+
+    def _alerts_for_reading(self) -> List[dict]:
+        if self.db is None:
+            return self._new_alerts()
+        try:
+            return self.sync_alerts(self.db)
+        except DeyeCloudError as exc:
+            log.warning("alert sync failed: %s", exc)
+            return []
+
+    def sync_alerts(self, db, days: Optional[int] = None) -> List[dict]:
+        """Store Deye alerts; returns serious ones not seen before. The first sync (30 days) is silent."""
+        self._resolve()
+        if not self.device_sn:
+            return []
+        first = db.get_state("alerts_synced") is None
+        days = days or (30 if first else 2)
+        now = time.time()
+        fresh = []
+        for a in self.client.alerts(self.device_sn, now - days * 86400 + 60, now):
+            aid = str(a.get("alertId") or f"{a.get('alertCode')}-{a.get('alertStartTime')}")
+            level = int(_num(a.get("level")) or 0)
+            is_new = db.upsert_alert(aid, str(a.get("alertName") or a.get("alertCode")), level,
+                                     _parse_time(a.get("alertStartTime")) or 0, _parse_time(a.get("alertEndTime")))
+            if is_new and level >= self.alert_min_level and not first:
+                fresh.append(a)
+        db.set_state("alerts_synced", str(now))
+        return fresh
 
     def _new_alerts(self) -> List[dict]:
         if not self.device_sn:
