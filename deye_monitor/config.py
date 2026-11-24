@@ -66,6 +66,9 @@ class Config:
     battery_kwh: float = 11.8
     battery_cutoff_soc: float = 10.0
     backfill_days: int = 45
+    worker_url: str = ""
+    cache_secret: str = ""
+    live_alerts: str = "python"  # "worker": the Cloudflare worker sends live alerts, Python stays quiet
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -109,6 +112,9 @@ class Config:
             battery_kwh=_float("BATTERY_KWH", 11.8),
             battery_cutoff_soc=_float("BATTERY_CUTOFF_SOC", 10.0),
             backfill_days=_int("BACKFILL_DAYS", 30),
+            worker_url=os.environ.get("WORKER_URL", "").strip().rstrip("/"),
+            cache_secret=os.environ.get("CACHE_SECRET", "").strip(),
+            live_alerts=os.environ.get("LIVE_ALERTS", "python").strip().lower(),
         )
 
     def validate(self) -> None:

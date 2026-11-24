@@ -50,6 +50,9 @@ jobs:
         env:
           COMMAND: ${{ inputs.command }}
           TELEGRAM_POLL: "0"
+          LIVE_ALERTS: worker
+          WORKER_URL: https://deye-monitor-bot.dzenplanning.workers.dev
+          CACHE_SECRET: ${{ secrets.CACHE_SECRET }}
           DEYE_ENV_FILE: /dev/null
           DEYE_MODE: cloud
           DEYE_CLOUD_APP_ID: ${{ secrets.DEYE_CLOUD_APP_ID }}

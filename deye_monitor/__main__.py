@@ -156,17 +156,48 @@ def answer_command(cfg: Config, command: str) -> None:
     deliver(text, png, tg.send, tg.send_photo)
 
 
+CACHED_COMMANDS = ("week", "month", "battery", "history", "stats", "errors")
+
+
+def publish_cache(cfg: Config, mon: Monitor) -> None:
+    """Pre-render every report command and hand it to the Cloudflare worker, which then answers instantly."""
+    import base64
+
+    import requests
+    items = {}
+    handlers = mon.handlers()
+    for cmd in CACHED_COMMANDS:
+        try:
+            reply = handlers[cmd]()
+        except Exception as exc:
+            log.warning("render %s failed: %s", cmd, type(exc).__name__)
+            continue
+        text, png = reply if isinstance(reply, tuple) else (reply, None)
+        items[cmd] = {"text": text, "png": base64.b64encode(png).decode() if png else None}
+    try:
+        resp = requests.post(f"{cfg.worker_url}/cache", json={"generated_at": time.time(), "items": items},
+                             headers={"X-Cache-Secret": cfg.cache_secret}, timeout=30)
+        if resp.status_code != 200:
+            log.warning("cache upload: HTTP %s", resp.status_code)
+    except Exception as exc:
+        log.warning("cache upload failed: %s", type(exc).__name__)
+
+
 def once(cfg: Config) -> None:
     """One poll, history sync, due reports, pending bot commands; then exit. For cron / GitHub Actions."""
     db = Storage(cfg.db_path)
     tg = _telegram(cfg)
     notify = tg.send if tg else (lambda text: log.info("NOTIFY: %s", text))
+    if cfg.live_alerts == "worker":  # the worker already told the user; keep the events for /errors only
+        notify = lambda text: None  # noqa: E731
     reader = make_reader(cfg, db)
     mon = Monitor(cfg, db, reader, notify)
     mon.load_state()
     mon.tick()
     mon.save_state()
     maintenance(cfg, db, reader, tg, mon)
+    if cfg.worker_url and cfg.cache_secret:
+        publish_cache(cfg, mon)
     if tg:
         if db.get_state("tg_commands") != tg.commands_version() and tg.sync_commands():
             db.set_state("tg_commands", tg.commands_version())
