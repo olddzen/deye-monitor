@@ -11,3 +11,4 @@ ios/build/
 *.xcuserstate
 xcuserdata/
 DerivedData/
+ios/build-device/
