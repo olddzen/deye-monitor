@@ -2,11 +2,17 @@ name: Deye monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # GitHub runs this every 5–15 min in practice
+    - cron: "*/15 * * * *"  # fallback; the Cloudflare worker starts this every 5 min
   workflow_dispatch:
+    inputs:
+      command:
+        description: "Bot command to answer (week, month, battery, history, stats, errors); empty = monitoring run"
+        required: false
+        default: ""
 
 concurrency:
-  group: deye-monitor
+  # command runs only read the state, so they don't queue behind (or cancel) monitoring runs
+  group: deye-monitor-${{ inputs.command && 'command' || 'tick' }}
   cancel-in-progress: false
 
 permissions:
@@ -35,8 +41,15 @@ jobs:
           restore-keys: deye-db-
 
       - name: Check inverter and answer bot commands
-        run: python -m deye_monitor once
+        run: |
+          case "$COMMAND" in
+            ""|week|month|battery|history|stats|errors) ;;
+            *) echo "unknown command"; exit 1 ;;
+          esac
+          python -m deye_monitor once ${COMMAND:+--command "$COMMAND"}
         env:
+          COMMAND: ${{ inputs.command }}
+          TELEGRAM_POLL: "0"
           DEYE_ENV_FILE: /dev/null
           DEYE_MODE: cloud
           DEYE_CLOUD_APP_ID: ${{ secrets.DEYE_CLOUD_APP_ID }}
@@ -51,7 +64,7 @@ jobs:
           UNREACHABLE_ALERT_AFTER: "900"
 
       - name: Save state
-        if: always()
+        if: always() && inputs.command == ''
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: data

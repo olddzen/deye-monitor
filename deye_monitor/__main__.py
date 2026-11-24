@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import threading
 import time
 from typing import Optional
@@ -132,6 +133,29 @@ def run(cfg: Config) -> None:
         time.sleep(max(1.0, cfg.poll_interval - (time.monotonic() - started)))
 
 
+def answer_command(cfg: Config, command: str) -> None:
+    """Reply to one bot command (started by the Cloudflare worker) from the stored data; no polling,
+    no state changes — the regular monitoring run owns the state."""
+    from .reports import deliver
+    db = Storage(cfg.db_path)
+    tg = _telegram(cfg)
+    if not tg:
+        return
+    mon = Monitor(cfg, db, None, tg.send)
+    mon.load_state()
+    handler = mon.handlers().get(command)
+    if handler is None:
+        log.warning("unknown command")
+        return
+    try:
+        reply = handler()
+    except Exception as exc:
+        log.warning("command failed: %s", type(exc).__name__)
+        reply = "Не вдалося підготувати відповідь, спробуй пізніше"
+    text, png = reply if isinstance(reply, tuple) else (reply, None)
+    deliver(text, png, tg.send, tg.send_photo)
+
+
 def once(cfg: Config) -> None:
     """One poll, history sync, due reports, pending bot commands; then exit. For cron / GitHub Actions."""
     db = Storage(cfg.db_path)
@@ -146,11 +170,12 @@ def once(cfg: Config) -> None:
     if tg:
         if db.get_state("tg_commands") != tg.commands_version() and tg.sync_commands():
             db.set_state("tg_commands", tg.commands_version())
-        try:
-            offset = tg.poll_once(mon.handlers(), int(db.get_state("tg_offset") or 0))
-            db.set_state("tg_offset", str(offset))
-        except Exception as exc:
-            log.warning("telegram poll failed: %s", exc)
+        if os.environ.get("TELEGRAM_POLL", "1") != "0":  # off when the Cloudflare webhook receives updates
+            try:
+                offset = tg.poll_once(mon.handlers(), int(db.get_state("tg_offset") or 0))
+                db.set_state("tg_offset", str(offset))
+            except Exception as exc:
+                log.warning("telegram poll failed: %s", exc)
     log.info("once: done")  # Actions logs are public: don't print power state
 
 
@@ -158,11 +183,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="deye_monitor")
     parser.add_argument("command", nargs="?", default="run", choices=["run", "once", "probe", "cloud-check"])
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--command", dest="command_name", default="", help="once: only answer this bot command and exit")
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = Config.from_env()
     cfg.validate()
+    if args.command == "once" and args.command_name:
+        answer_command(cfg, args.command_name)
+        return
     {"probe": probe, "once": once, "cloud-check": cloud_check}.get(args.command, run)(cfg)
 
 

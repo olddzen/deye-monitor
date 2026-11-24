@@ -1,0 +1,19 @@
+# Cloudflare Worker: instant /status and a reliable 5-minute trigger for the GitHub workflow.
+# Secrets (wrangler secret put …): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_WEBHOOK_SECRET,
+# DEYE_CLOUD_APP_ID, DEYE_CLOUD_APP_SECRET, DEYE_CLOUD_EMAIL, DEYE_CLOUD_PASSWORD_SHA256,
+# DEYE_CLOUD_DEVICE_SN, GITHUB_TOKEN (fine-grained, Actions: read & write on this repo only).
+name = "deye-monitor-bot"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[vars]
+GITHUB_REPO = "olddzen/deye-monitor"
+DEYE_CLOUD_URL = "https://eu1-developer.deyecloud.com"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[kv_namespaces]]
+binding = "KV"
+id = "0005a6019bdb432abaace08971756028"
