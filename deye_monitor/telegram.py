@@ -23,8 +23,11 @@ class Telegram:
         self.chat_id = chat_id
 
     def _call(self, method: str, http_timeout: float = 15, **params):
-        resp = requests.post(f"{self.base}/{method}", json=params, timeout=http_timeout)
-        data = resp.json()
+        try:
+            resp = requests.post(f"{self.base}/{method}", json=params, timeout=http_timeout)
+            data = resp.json()
+        except Exception as exc:  # requests errors include the URL, which contains the token
+            raise RuntimeError(f"Telegram {method}: {type(exc).__name__}") from None
         if not data.get("ok"):
             raise RuntimeError(f"Telegram {method}: {data.get('description')}")
         return data["result"]
