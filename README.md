@@ -121,6 +121,22 @@ Workflow `.github/workflows/monitor.yml` раз на ~5–15 хв запуска
 Мінуси: GitHub запускає cron із затримкою, тому сповіщення приходять через 5–20 хв, а бот відповідає
 на команди при наступному запуску. Workflow `keepalive.yml` не дає GitHub вимкнути розклад через 60 днів.
 
+### Миттєвий /status і надійний запуск: Cloudflare Worker
+
+Cron GitHub Actions ненадійний (може не запускатись годинами), а бот на Actions відповідає із затримкою.
+Тому в `worker/` лежить безкоштовний Cloudflare Worker:
+
+- Telegram webhook → `/status` відповідає за 1–2 с прямо з Deye Cloud (світло, відколи, батарея,
+  навантаження, мережа, температури, вік даних);
+- `/week`, `/month`, `/battery`, `/history`, `/stats`, `/errors` → запускає workflow з `command`,
+  звіт приходить приблизно за хвилину;
+- cron кожні 5 хв запускає моніторинг на GitHub (власний розклад GitHub лишається запасним, раз на 15 хв).
+
+Розгортання (`cd worker`): `npx wrangler kv namespace create deye-monitor-kv` (id → `wrangler.toml`),
+`npx wrangler deploy`, секрети через `npx wrangler secret put` (список у `wrangler.toml`), де `GITHUB_TOKEN` —
+fine-grained токен лише на цей репозиторій з правом **Actions: Read and write**. Далі Telegram `setWebhook` на
+`https://<worker>.workers.dev/telegram` з `secret_token` = `TELEGRAM_WEBHOOK_SECRET`.
+
 ### Або на сервері 24/7
 
 Безкоштовний або дешевий сервер, що працює 24/7: Oracle Cloud Always Free, Google Cloud e2-micro (free tier),
