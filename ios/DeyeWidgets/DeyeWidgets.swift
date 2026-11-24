@@ -58,53 +58,56 @@ struct PowerWidget: Widget {
 
 struct PowerWidgetView: View {
     @Environment(\.widgetFamily) private var family
+    @Environment(\.colorScheme) private var scheme
     let entry: PowerEntry
 
     private var live: Live? { entry.live }
-    private var on: Bool { live?.gridOn == true }
-    private var stale: Bool { live?.isStale ?? true }
-    private var tint: Color { live == nil || stale ? Theme.warning : on ? Theme.good : Theme.critical }
-    private var title: String { live == nil ? "Немає даних" : stale ? "Deye мовчить" : on ? "Світло є" : "Світла немає" }
-    private var icon: String { live == nil || stale ? "wifi.slash" : on ? "bolt.fill" : "bolt.slash.fill" }
+    private var state: PowerState { PowerState(live) }
+    private var since: Date? {
+        guard state != .unknown else { return nil }
+        if let s = live?.sinceDate { return s }
+        return entry.outagesToday.last(where: { $0.end == nil })?.startDate
+    }
 
     var body: some View {
         switch family {
         case .accessoryInline:
-            if let since = live?.sinceDate, !stale {
-                Text("\(on ? "💡" : "🔌") \(on ? "є" : "немає") ") + Text(since, style: .relative)
+            if let since {
+                Text("\(state == .on ? "💡" : "🔌") ") + Text(since, style: .relative)
             } else {
-                Text("\(on ? "💡 світло є" : "🔌 світла немає")")
+                Text(state.title)
             }
         case .accessoryCircular:
             Gauge(value: (live?.soc ?? 0) / 100) {
-                Image(systemName: icon)
+                Image(systemName: state.symbol)
             } currentValueLabel: {
                 Text(live?.soc.map { "\(Int($0))" } ?? "—")
             }
-            .gaugeStyle(.accessoryCircular)
+            .gaugeStyle(.accessoryCircularCapacity)
             .widgetAccentable()
         case .accessoryRectangular:
-            VStack(alignment: .leading, spacing: 1) {
-                Label(title, systemImage: icon).font(.headline).widgetAccentable()
-                if let since = live?.sinceDate, !stale {
-                    (Text("вже ") + Text(since, style: .relative)).font(.caption).monospacedDigit()
+            VStack(alignment: .leading, spacing: 0) {
+                Label(state.title, systemImage: state.symbol).font(.headline).widgetAccentable()
+                if let since {
+                    Text(timerInterval: since...Date.distantFuture, countsDown: false)
+                        .font(.system(.title3, design: .rounded).weight(.semibold)).monospacedDigit()
                 }
-                Text("🔋 \(live?.soc.map { "\(Int($0))%" } ?? "—")").font(.caption)
+                Text("батарея \(live?.soc.map { "\(Int($0))%" } ?? "—")").font(.caption)
             }
         case .systemMedium:
-            HStack(spacing: 14) {
-                statusColumn
-                Divider()
-                VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 16) {
+                status
+                VStack(alignment: .leading, spacing: 10) {
                     battery
-                    todayStrip
+                    Spacer(minLength: 0)
+                    today
                 }
             }
             .containerBackground(for: .widget) { background }
         default:
-            VStack(alignment: .leading, spacing: 6) {
-                statusColumn
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 0) {
+                status
+                Spacer(minLength: 6)
                 battery
             }
             .containerBackground(for: .widget) { background }
@@ -112,57 +115,63 @@ struct PowerWidgetView: View {
     }
 
     private var background: some View {
-        LinearGradient(colors: [tint.opacity(0.22), Theme.card], startPoint: .topLeading, endPoint: .bottomTrailing)
+        let base = scheme == .dark ? Color(hex: 0x111213) : Color(hex: 0xf7f7f4)
+        return ZStack {
+            base
+            RadialGradient(colors: [state.accent.opacity(scheme == .dark ? 0.55 : 0.32), .clear],
+                           center: .topLeading, startRadius: 0, endRadius: 170)
+        }
     }
 
-    private var statusColumn: some View {
-        VStack(alignment: .leading, spacing: 3) {
+    private var status: some View {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
-                Circle().fill(tint).frame(width: 8, height: 8)
-                Text(on && !stale ? "Мережа є" : stale ? "немає даних" : "Мережі немає")
-                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Image(systemName: state.symbol).foregroundStyle(state.accent)
+                Text(state.title).font(.system(.subheadline, design: .rounded).weight(.semibold))
             }
-            Text(title).font(.system(size: 20, weight: .bold, design: .rounded)).minimumScaleFactor(0.7).lineLimit(1)
-            if let since = live?.sinceDate, !stale {
-                Text(since, style: .relative).font(.subheadline.weight(.semibold)).monospacedDigit()
+            .lineLimit(1).minimumScaleFactor(0.8)
+            if let since {
+                Text(timerInterval: since...Date.distantFuture, countsDown: false)
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.6)
                 Text("з \(Fmt.time(since))").font(.caption2).foregroundStyle(.secondary)
-            } else if let u = live?.updatedDate, stale {
+            } else if let u = live?.updatedDate {
                 Text("дані о \(Fmt.time(u))").font(.caption).foregroundStyle(.secondary)
             } else if let e = entry.error {
                 Text(e).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var battery: some View {
-        HStack(spacing: 6) {
-            ZStack {
-                Circle().stroke(Theme.track, lineWidth: 4)
-                Circle().trim(from: 0, to: CGFloat((live?.soc ?? 0) / 100))
-                    .stroke(Theme.batteryColor(live?.soc), style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(live?.soc.map { "\(Int($0))%" } ?? "—").font(.headline).monospacedDigit()
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(live?.soc.map { "\(Int($0))" } ?? "—").font(.system(size: 20, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text("%").font(.system(size: 11, weight: .medium, design: .rounded)).foregroundStyle(.secondary)
+                Spacer()
                 if let h = live?.runtimeH, h > 0 {
                     Text("≈ \(Fmt.short(h * 3600))").font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            CapsuleMeter(fraction: (live?.soc ?? 0) / 100,
+                         tint: (live?.soc ?? 100) < 20 ? Theme.critical : (live?.soc ?? 100) < 40 ? Theme.warning : state.accent,
+                         height: 6)
         }
     }
 
-    private var todayStrip: some View {
+    private var today: some View {
         let cal = Fmt.kyivCalendar
         let now = entry.date, dayStart = cal.startOfDay(for: now)
-        return VStack(alignment: .leading, spacing: 3) {
-            Text("Сьогодні").font(.caption2).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("сьогодні").font(.caption2).foregroundStyle(.secondary)
             GeometryReader { geo in
                 let w = geo.size.width
                 let x = { (d: Date) in CGFloat(d.timeIntervalSince(dayStart) / 86400) * w }
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.track)
-                    Capsule().fill(Theme.good.opacity(0.35)).frame(width: x(now))
+                    Capsule().fill(.primary.opacity(0.08))
+                    Capsule().fill(Theme.good.opacity(0.4)).frame(width: max(4, x(now)))
                     ForEach(entry.outagesToday) { o in
                         let s = max(o.startDate, dayStart), e = min(o.endDate ?? now, now)
                         if e > s {
@@ -171,11 +180,7 @@ struct PowerWidgetView: View {
                     }
                 }
             }
-            .frame(height: 10)
-            HStack {
-                Text("00"); Spacer(); Text("12"); Spacer(); Text("24")
-            }
-            .font(.system(size: 9)).foregroundStyle(.secondary)
+            .frame(height: 6)
         }
     }
 }

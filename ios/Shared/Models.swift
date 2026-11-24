@@ -96,6 +96,12 @@ struct BatteryStats: Decodable {
     let inverterTempMax: Double?
     let coverage: Double?
     let typicalLoadW: Double?
+
+    // convertFromSnakeCase turns "discharged_30d" into "discharged30D"
+    enum CodingKeys: String, CodingKey {
+        case nominalKwh, capacityKwh, health, cyclesTotal, tempMax, inverterTempMax, coverage, typicalLoadW
+        case discharged30d = "discharged30D"
+    }
 }
 
 struct EnergyStats: Decodable {

@@ -1,47 +1,6 @@
 import Charts
 import SwiftUI
 
-// MARK: - Today
-
-struct TodayStrip: View {
-    let outages: [Outage]
-
-    var body: some View {
-        let cal = Fmt.kyivCalendar
-        let now = Date.now
-        let dayStart = cal.startOfDay(for: now)
-        let segs = outages.compactMap { o -> (Date, Date, Outage)? in
-            let s = max(o.startDate, dayStart), e = min(o.endDate ?? now, now)
-            return e > s ? (s, e, o) : nil
-        }
-        let total = segs.reduce(0) { $0 + $1.1.timeIntervalSince($1.0) }
-        Card(title: "Сьогодні") {
-            GeometryReader { geo in
-                let w = geo.size.width
-                let x = { (d: Date) in CGFloat(d.timeIntervalSince(dayStart) / 86400) * w }
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 6).fill(Theme.track.opacity(0.6))
-                    RoundedRectangle(cornerRadius: 6).fill(Theme.good.opacity(0.18)).frame(width: x(now))
-                    ForEach(segs, id: \.2.id) { s, e, _ in
-                        RoundedRectangle(cornerRadius: 4).fill(Theme.critical)
-                            .frame(width: max(2, x(e) - x(s))).offset(x: x(s))
-                    }
-                    Rectangle().fill(.primary).frame(width: 2, height: 36).offset(x: x(now) - 1)
-                }
-            }
-            .frame(height: 28)
-            HStack {
-                ForEach([0, 6, 12, 18, 24], id: \.self) { h in
-                    Text(String(format: "%02d", h)).font(.caption2).foregroundStyle(.secondary)
-                    if h != 24 { Spacer() }
-                }
-            }
-            Text(total > 0 ? "сьогодні без світла \(Fmt.duration(total))" : "сьогодні відключень не було")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-    }
-}
-
 // MARK: - Chart model (computed once per data refresh, not on every redraw)
 
 struct LinePoint: Identifiable {
@@ -104,33 +63,71 @@ private func nearest(_ pts: [LinePoint], to date: Date?) -> LinePoint? {
     return pts.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
 }
 
-// MARK: - 7-day lines (one measure per chart, never a dual axis)
+// MARK: - Charts (one measure per chart, no dual axis, minimal ink)
+
+private struct ChartCard<Content: View>: View {
+    let title: String
+    var trailing: String?
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                SectionLabel(text: title)
+                Spacer()
+                if let trailing { Text(trailing).font(.caption).foregroundStyle(.secondary) }
+            }
+            content
+        }
+        .glassCard()
+    }
+}
+
+private extension View {
+    func minimalAxes(showY: Bool = true) -> some View {
+        self
+            .chartXAxis {
+                AxisMarks(values: .stride(by: .day)) { _ in
+                    AxisValueLabel(format: .dateTime.weekday(.abbreviated), centered: true)
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+            .chartYAxis {
+                if showY {
+                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 3])).foregroundStyle(.primary.opacity(0.12))
+                        AxisValueLabel().foregroundStyle(Color.secondary)
+                    }
+                }
+            }
+    }
+}
 
 struct ChargeChart: View, Equatable {
     let model: ChartModel
     @State private var selected: Date?
-
     static func == (a: ChargeChart, b: ChargeChart) -> Bool { a.model == b.model }
 
     var body: some View {
-        Card(title: "Заряд батареї, %") {
+        ChartCard(title: "Заряд батареї", trailing: "7 днів") {
             if model.soc.count < 2 {
                 Text("BMS ще не передав даних за тиждень").font(.footnote).foregroundStyle(.secondary)
             } else {
                 Chart {
                     ForEach(model.bands.indices, id: \.self) { i in
                         RectangleMark(xStart: .value("Початок", model.bands[i].0), xEnd: .value("Кінець", model.bands[i].1))
-                            .foregroundStyle(Theme.critical.opacity(0.14))
+                            .foregroundStyle(Theme.critical.opacity(0.12))
                     }
                     ForEach(model.soc) { p in
                         LineMark(x: .value("Час", p.date), y: .value("Заряд", p.value), series: .value("Відрізок", p.segment))
                             .foregroundStyle(Theme.series)
                             .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .interpolationMethod(.monotone)
                     }
                     if let hit = nearest(model.soc, to: selected) {
-                        RuleMark(x: .value("Час", hit.date)).foregroundStyle(.secondary.opacity(0.4))
+                        RuleMark(x: .value("Час", hit.date)).foregroundStyle(.primary.opacity(0.2))
                         PointMark(x: .value("Час", hit.date), y: .value("Заряд", hit.value))
-                            .foregroundStyle(Theme.series)
+                            .foregroundStyle(Theme.series).symbolSize(60)
                             .annotation(position: .top, overflowResolution: .init(x: .fit, y: .disabled)) {
                                 Tooltip(lines: ["\(Fmt.dayMonth(hit.date)), \(Fmt.time(hit.date))", "\(Int(hit.value))%"])
                             }
@@ -138,11 +135,10 @@ struct ChargeChart: View, Equatable {
                 }
                 .chartYScale(domain: 0...100)
                 .chartXScale(domain: model.from...model.to)
-                .chartYAxis { AxisMarks(values: [0, 50, 100]) }
-                .chartXAxis { AxisMarks(values: .stride(by: .day)) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.weekday(.abbreviated)) } }
+                .minimalAxes()
                 .chartXSelection(value: $selected)
-                .frame(height: 150)
-                Legend(items: [("заряд", Theme.series), ("без світла", Theme.critical.opacity(0.3))])
+                .frame(height: 160)
+                Legend(items: [("заряд, %", Theme.series), ("без світла", Theme.critical.opacity(0.35))])
             }
         }
     }
@@ -151,33 +147,32 @@ struct ChargeChart: View, Equatable {
 struct LoadChart: View, Equatable {
     let model: ChartModel
     @State private var selected: Date?
-
     static func == (a: LoadChart, b: LoadChart) -> Bool { a.model == b.model }
 
     var body: some View {
-        Card(title: "Споживання квартири, Вт (пік за 30 хв)") {
+        ChartCard(title: "Споживання", trailing: "пік за 30 хв, Вт") {
             if model.load.count < 2 {
                 Text("Ще замало даних").font(.footnote).foregroundStyle(.secondary)
             } else {
                 Chart {
                     ForEach(model.bands.indices, id: \.self) { i in
                         RectangleMark(xStart: .value("Початок", model.bands[i].0), xEnd: .value("Кінець", model.bands[i].1))
-                            .foregroundStyle(Theme.critical.opacity(0.14))
+                            .foregroundStyle(Theme.critical.opacity(0.12))
                     }
                     ForEach(model.load) { p in
                         LineMark(x: .value("Час", p.date), y: .value("Вт", p.value), series: .value("Відрізок", p.segment))
                             .foregroundStyle(Theme.series)
-                            .lineStyle(StrokeStyle(lineWidth: 1.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round))
                     }
                     if let hit = nearest(model.load, to: selected) {
-                        RuleMark(x: .value("Час", hit.date)).foregroundStyle(.secondary.opacity(0.4))
+                        RuleMark(x: .value("Час", hit.date)).foregroundStyle(.primary.opacity(0.2))
                             .annotation(position: .top, overflowResolution: .init(x: .fit, y: .disabled)) {
                                 Tooltip(lines: ["\(Fmt.dayMonth(hit.date)), \(Fmt.time(hit.date))", "до \(Int(hit.value)) Вт"])
                             }
                     }
                 }
                 .chartXScale(domain: model.from...model.to)
-                .chartXAxis { AxisMarks(values: .stride(by: .day)) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.weekday(.abbreviated)) } }
+                .minimalAxes()
                 .chartXSelection(value: $selected)
                 .frame(height: 130)
             }
@@ -185,90 +180,71 @@ struct LoadChart: View, Equatable {
     }
 }
 
-// MARK: - Heatmap (sequential blue), drawn in one Canvas
-
 struct HeatmapCard: View, Equatable {
     let rows: [[Double]]
     let version: Double
     private let days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
     @State private var picked: (Int, Int)?
-
     static func == (a: HeatmapCard, b: HeatmapCard) -> Bool { a.version == b.version }
 
     var body: some View {
-        Card(title: "Коли зазвичай немає світла · 4 тижні") {
+        ChartCard(title: "Коли зазвичай немає світла", trailing: "4 тижні") {
             if rows.count == 7 {
-                HStack(alignment: .top, spacing: 4) {
-                    VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .top, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 3) {
                         ForEach(0..<7, id: \.self) { w in
-                            Text(days[w]).font(.caption2).foregroundStyle(.secondary).frame(height: 16)
+                            Text(days[w]).font(.caption2).foregroundStyle(.secondary).frame(height: 14)
                         }
                     }
                     GeometryReader { geo in
-                        let cw = (geo.size.width - 23 * 2) / 24
+                        let cw = (geo.size.width - 23 * 3) / 24
                         Canvas { ctx, _ in
                             for w in 0..<7 {
                                 for h in 0..<24 {
-                                    let r = CGRect(x: CGFloat(h) * (cw + 2), y: CGFloat(w) * 18, width: cw, height: 16)
-                                    ctx.fill(Path(roundedRect: r, cornerRadius: 3), with: .color(Theme.seqColor(rows[w][h])))
+                                    let r = CGRect(x: CGFloat(h) * (cw + 3), y: CGFloat(w) * 17, width: cw, height: 14)
+                                    let v = rows[w][h]
+                                    let fill: Color = v > 0 ? Theme.seqColor(v) : Color.primary.opacity(0.06)
+                                    ctx.fill(Path(roundedRect: r, cornerRadius: 4), with: .color(fill))
                                     if let p = picked, p == (w, h) {
-                                        ctx.stroke(Path(roundedRect: r, cornerRadius: 3), with: .color(.primary), lineWidth: 1.5)
+                                        ctx.stroke(Path(roundedRect: r.insetBy(dx: -1, dy: -1), cornerRadius: 5),
+                                                   with: .color(.primary), lineWidth: 1.5)
                                     }
                                 }
                             }
                         }
                         .contentShape(Rectangle())
                         .onTapGesture { loc in
-                            let h = min(23, max(0, Int(loc.x / (cw + 2)))), w = min(6, max(0, Int(loc.y / 18)))
-                            picked = (w, h)
+                            picked = (min(6, max(0, Int(loc.y / 17))), min(23, max(0, Int(loc.x / (cw + 3)))))
                         }
                     }
-                    .frame(height: 7 * 18)
+                    .frame(height: 7 * 17)
                 }
-                HStack {
-                    Text("").frame(width: 20)
-                    ForEach([0, 6, 12, 18, 23], id: \.self) { h in
-                        Text("\(h)").font(.caption2).foregroundStyle(.secondary)
-                        if h != 23 { Spacer() }
+                Group {
+                    if let (w, h) = picked {
+                        Text("\(days[w]) \(String(format: "%02d", h)):00–\(String(format: "%02d", h + 1)):00 · без світла \(Int(rows[w][h] * 100))% днів")
+                    } else {
+                        Text("Торкнись клітинки · темніше — частіше без світла")
                     }
                 }
-                if let (w, h) = picked {
-                    Text("\(days[w]), \(String(format: "%02d", h)):00–\(String(format: "%02d", h + 1)):00 — без світла \(Int(rows[w][h] * 100))% часу")
-                        .font(.footnote).monospacedDigit()
-                } else {
-                    HStack(spacing: 6) {
-                        Text("0%").font(.caption2).foregroundStyle(.secondary)
-                        ForEach(0..<Theme.seq.count, id: \.self) { i in
-                            RoundedRectangle(cornerRadius: 2).fill(Theme.seq[i]).frame(width: 14, height: 10)
-                        }
-                        Text("100% днів · торкнись клітинки").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
         }
     }
 }
 
-// MARK: - Daily bars
-
 struct DailyChart: View, Equatable {
     let model: ChartModel
     @State private var selected: Date?
-
     static func == (a: DailyChart, b: DailyChart) -> Bool { a.model == b.model }
 
     var body: some View {
-        Card(title: "Години без світла по днях · 30 днів") {
+        ChartCard(title: "Години без світла", trailing: "30 днів") {
             Chart {
                 ForEach(model.days, id: \.row.id) { r, day in
-                    if r.hasData == true {
-                        BarMark(x: .value("День", day, unit: .day), y: .value("Години", (r.offMin ?? 0) / 60))
-                            .foregroundStyle(Theme.series)
-                            .cornerRadius(3)
-                    } else {
-                        BarMark(x: .value("День", day, unit: .day), y: .value("Години", 0.08))
-                            .foregroundStyle(Theme.noData)
-                    }
+                    BarMark(x: .value("День", day, unit: .day),
+                            y: .value("Години", r.hasData == true ? max((r.offMin ?? 0) / 60, 0.05) : 0.05))
+                        .foregroundStyle(r.hasData == true && (r.offMin ?? 0) > 0 ? Theme.series : Color.primary.opacity(0.1))
+                        .cornerRadius(3)
                 }
                 if let selected, let r = model.days.min(by: { abs($0.day.timeIntervalSince(selected)) < abs($1.day.timeIntervalSince(selected)) }) {
                     RuleMark(x: .value("День", r.day, unit: .day)).foregroundStyle(.clear)
@@ -279,78 +255,44 @@ struct DailyChart: View, Equatable {
                 }
             }
             .chartXSelection(value: $selected)
-            .chartXAxis { AxisMarks(values: .stride(by: .day, count: 7)) { _ in AxisValueLabel(format: .dateTime.day().month(.defaultDigits)) } }
+            .chartXAxis { AxisMarks(values: .stride(by: .day, count: 7)) { _ in AxisValueLabel(format: .dateTime.day().month(.defaultDigits)).foregroundStyle(Color.secondary) } }
+            .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in AxisValueLabel().foregroundStyle(Color.secondary) } }
             .frame(height: 120)
-            Legend(items: [("без світла", Theme.series), ("немає даних", Theme.noData)])
         }
     }
 }
 
-// MARK: - Outages and details
+// MARK: - Outages
 
 struct OutageList: View {
     let outages: [Outage]
 
     var body: some View {
-        let items = Array(outages.suffix(8).reversed())
-        Card(title: "Останні відключення") {
+        let items = Array(outages.suffix(10).reversed())
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel(text: "Відключення")
             if items.isEmpty {
-                Text("За 60 днів відключень не було 🎉").foregroundStyle(.secondary)
+                Text("За 60 днів відключень не було").foregroundStyle(.secondary)
             }
             ForEach(items) { o in
-                HStack {
-                    Text(Fmt.dayMonth(o.startDate)).fontWeight(.semibold)
-                    Text("\(Fmt.time(o.startDate))–\(o.endDate.map(Fmt.time) ?? "зараз")").foregroundStyle(.secondary)
-                    Spacer()
-                    if o.uncertain {
-                        Text("≥").font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Theme.warning.opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
+                HStack(spacing: 12) {
+                    Capsule().fill(o.end == nil ? Theme.critical : Theme.critical.opacity(0.5)).frame(width: 4, height: 30)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(Fmt.dayMonth(o.startDate)).font(.subheadline.weight(.semibold))
+                        Text("\(Fmt.time(o.startDate)) – \(o.endDate.map(Fmt.time) ?? "зараз")")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     }
-                    Text(Fmt.duration(o.duration()))
+                    Spacer()
+                    Text((o.uncertain ? "≥ " : "") + Fmt.duration(o.duration()))
+                        .font(.subheadline.weight(.medium)).monospacedDigit()
                 }
-                .font(.subheadline).monospacedDigit()
-                if o.id != items.last?.id { Divider() }
             }
             if items.contains(where: \.uncertain) {
                 Text("≥ — поруч була дірка в даних Deye, реальне відключення могло бути довшим")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
         }
-    }
-}
-
-struct DetailsCard: View {
-    let stats: Stats
-    private let hints = ["F13": "зміна режиму", "F25": "батарея", "F47": "частота мережі",
-                         "F56": "низька напруга батареї", "F58": "зв'язок з BMS", "F64": "перегрів"]
-
-    var body: some View {
-        let b = stats.battery, g = stats.grid30, e = stats.energy30
-        Card(title: "Батарея і мережа · 30 днів") {
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
-                Tile(title: "Віддала батарея", value: "\(Fmt.number(b?.discharged30d)) кВт·год",
-                     detail: "циклів за весь час \(Fmt.number(b?.cyclesTotal)) з ~6000")
-                Tile(title: "Температура, макс.",
-                     value: "\(b?.tempMax.map { "\(Int($0))°" } ?? "—") / \(b?.inverterTempMax.map { "\(Int($0))°" } ?? "—")",
-                     detail: "батарея / інвертор")
-                Tile(title: "Напруга мережі", value: "\(g?.vMin.map { "\(Int($0))" } ?? "—")–\(g?.vMax.map { "\(Int($0))" } ?? "—") В",
-                     detail: "середня \(g?.vAvg.map { "\(Int($0))" } ?? "—") В")
-                Tile(title: "Спожито квартирою", value: "\(Fmt.number(e?.loadKwh)) кВт·год",
-                     detail: "тариф \(Fmt.number(e?.tariff, digits: 2)) ₴")
-            }
-            if let cov = b?.coverage, cov < 80 {
-                Label("BMS передавав дані лише \(Int(cov))% часу", systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote).padding(8)
-                    .background(Theme.warning.opacity(0.18), in: Capsule())
-            }
-            Text("АВАРІЇ DEYE").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
-            let alerts = (stats.alerts30 ?? [:]).sorted { $0.value > $1.value }
-            if alerts.isEmpty {
-                Text("✅ аварій не було").font(.subheadline)
-            } else {
-                FlowRow(items: alerts.map { "⚠️ \($0.key) × \($0.value)" + (hints[$0.key].map { " · \($0)" } ?? "") })
-            }
-        }
+        .glassCard()
     }
 }
 
@@ -364,9 +306,8 @@ struct Tooltip: View {
                 Text(lines[i]).font(i == lines.count - 1 ? .caption.weight(.bold) : .caption2)
             }
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .foregroundStyle(Theme.page)
-        .background(.primary, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 9).padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -376,23 +317,11 @@ struct Legend: View {
         HStack(spacing: 14) {
             ForEach(items.indices, id: \.self) { i in
                 HStack(spacing: 5) {
-                    RoundedRectangle(cornerRadius: 3).fill(items[i].1).frame(width: 12, height: 10)
+                    Capsule().fill(items[i].1).frame(width: 12, height: 6)
                     Text(items[i].0)
                 }
             }
         }
         .font(.caption).foregroundStyle(.secondary)
-    }
-}
-
-struct FlowRow: View {
-    let items: [String]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(items, id: \.self) { t in
-                Text(t).font(.footnote).padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(Theme.tile, in: Capsule()).overlay(Capsule().stroke(Theme.line))
-            }
-        }
     }
 }
