@@ -24,36 +24,38 @@ enum Fmt {
         return "\(m / 1440) д \(m % 1440 / 60) год"
     }
 
-    static func time(_ date: Date) -> String {
+    // Formatters are expensive to create: build each once.
+    private static func dateFormatter(_ format: String) -> DateFormatter {
         let f = DateFormatter()
         f.locale = uk
         f.timeZone = kyiv
-        f.dateFormat = "HH:mm"
-        return f.string(from: date)
+        f.dateFormat = format
+        return f
     }
+    private static let hm = dateFormatter("HH:mm")
+    private static let dm = dateFormatter("d MMM")
+    static let isoDay = dateFormatter("yyyy-MM-dd")
+    private static let numbers: [Int: NumberFormatter] = Dictionary(uniqueKeysWithValues: (0...2).map { d in
+        let f = NumberFormatter()
+        f.locale = uk
+        f.maximumFractionDigits = d
+        f.minimumFractionDigits = 0
+        return (d, f)
+    })
 
-    static func dayMonth(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = uk
-        f.timeZone = kyiv
-        f.dateFormat = "d MMM"
-        return f.string(from: date)
-    }
+    static func time(_ date: Date) -> String { hm.string(from: date) }
+    static func dayMonth(_ date: Date) -> String { dm.string(from: date) }
 
     static func number(_ x: Double?, digits: Int = 1) -> String {
         guard let x else { return "—" }
-        let f = NumberFormatter()
-        f.locale = uk
-        f.maximumFractionDigits = digits
-        f.minimumFractionDigits = 0
-        return f.string(from: NSNumber(value: x)) ?? "—"
+        return numbers[min(max(digits, 0), 2)]?.string(from: NSNumber(value: x)) ?? "—"
     }
 
-    static var kyivCalendar: Calendar {
+    static let kyivCalendar: Calendar = {
         var c = Calendar(identifier: .gregorian)
         c.timeZone = kyiv
         c.locale = uk
         c.firstWeekday = 2
         return c
-    }
+    }()
 }

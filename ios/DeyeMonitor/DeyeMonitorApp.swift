@@ -14,16 +14,27 @@ struct DeyeMonitorApp: App {
 @MainActor
 final class Store: ObservableObject {
     @Published var response: DashboardResponse?
+    @Published var charts: ChartModel?
     @Published var error: String?
-    @Published var loading = false
+    private var lastWidgetReload = Date.distantPast
+    private var lastGridOn: Bool?
 
     func refresh() async {
-        loading = true
-        defer { loading = false }
         do {
-            response = try await APIClient.shared.fetch()
+            let r = try await APIClient.shared.fetch()
+            let version = r.generatedAt ?? 0
+            // heavy chart prep only when the 5-minute statistics actually changed
+            if let stats = r.data, charts?.version != version {
+                charts = await Task.detached(priority: .userInitiated) { ChartModel(stats: stats, version: version) }.value
+            }
+            response = r
             error = nil
-            WidgetCenter.shared.reloadAllTimelines()
+            let grid = r.live?.gridOn
+            if grid != lastGridOn || Date.now.timeIntervalSince(lastWidgetReload) > 600 {
+                WidgetCenter.shared.reloadAllTimelines()
+                lastWidgetReload = .now
+                lastGridOn = grid
+            }
         } catch {
             self.error = error.localizedDescription
         }
@@ -54,10 +65,12 @@ struct ContentView: View {
                     if let stats = store.response?.data {
                         WeekTiles(stats: stats)
                         TodayStrip(outages: stats.outages ?? [])
-                        ChargeChart(stats: stats)
-                        LoadChart(stats: stats)
-                        HeatmapCard(rows: stats.heatmap28 ?? [])
-                        DailyChart(rows: stats.daily30 ?? [])
+                        if let charts = store.charts {
+                            ChargeChart(model: charts).equatable()
+                            LoadChart(model: charts).equatable()
+                            HeatmapCard(rows: stats.heatmap28 ?? [], version: charts.version).equatable()
+                            DailyChart(model: charts).equatable()
+                        }
                         OutageList(outages: stats.outages ?? [])
                         DetailsCard(stats: stats)
                     }

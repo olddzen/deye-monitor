@@ -122,12 +122,12 @@ struct BatteryRing: View {
 
 struct PowerFlow: View {
     let live: Live
+    /// Animated once with repeatForever: Core Animation moves the dashes, no per-frame SwiftUI work.
+    @State private var phase: CGFloat = 0
 
     var body: some View {
         Card(title: "Потоки енергії") {
-            TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-                let phase = context.date.timeIntervalSinceReferenceDate * 14
-                GeometryReader { geo in
+            GeometryReader { geo in
                     let w = geo.size.width, grid = CGPoint(x: 22, y: 26), inv = CGPoint(x: w / 2, y: 26)
                     let home = CGPoint(x: w - 22, y: 26), bat = CGPoint(x: w / 2, y: 96)
                     let gp = live.gridPower ?? 0, load = live.load ?? 0, bp = live.batteryPower ?? 0
@@ -146,8 +146,10 @@ struct PowerFlow: View {
                         }
                         .position(x: bat.x + 58, y: bat.y)
                     }
-                }
-                .frame(height: 122)
+            }
+            .frame(height: 122)
+            .onAppear {
+                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) { phase = 22 }
             }
         }
     }
@@ -158,7 +160,7 @@ struct PowerFlow: View {
         return "\(bp < 0 ? "заряд" : "розряд") \(Int(abs(bp))) Вт"
     }
 
-    private func wire(_ a: CGPoint, _ b: CGPoint, active: Bool, reverse: Bool, phase: Double) -> some View {
+    private func wire(_ a: CGPoint, _ b: CGPoint, active: Bool, reverse: Bool, phase: CGFloat) -> some View {
         ZStack {
             Path { p in p.move(to: a); p.addLine(to: b) }
                 .stroke(Theme.line, style: StrokeStyle(lineWidth: 3, lineCap: .round))
@@ -166,6 +168,7 @@ struct PowerFlow: View {
                 Path { p in p.move(to: a); p.addLine(to: b) }
                     .stroke(Theme.series, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [2, 9],
                                                              dashPhase: reverse ? phase : -phase))
+                    .drawingGroup()
             }
         }
     }

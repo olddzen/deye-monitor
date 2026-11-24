@@ -72,12 +72,7 @@ struct DayRow: Decodable, Identifiable {
     let importKwh: Double?
     let hasData: Bool?
     var id: String { date }
-    var day: Date {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.timeZone = Fmt.kyiv
-        return f.date(from: date) ?? .now
-    }
+    var day: Date { Fmt.isoDay.date(from: date) ?? .now }
 }
 
 struct WeekStats: Decodable {
