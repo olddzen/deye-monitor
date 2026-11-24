@@ -19,7 +19,17 @@ from .inverter import Reading
 log = logging.getLogger(__name__)
 
 # Candidate measure-point names for grid voltage, most specific first (matched case-insensitively).
-GRID_VOLTAGE_KEYS = ("GridVoltageL1", "GridVoltage", "G_V_L1", "AcVoltageR", "GridVoltageL1N")
+GRID_VOLTAGE_KEYS = ("GridVoltageL1L2", "GridVoltageL1", "GridVoltage", "G_V_L1", "GridVoltageL1N")
+
+# Ukrainian hints for Deye fault codes seen on single-phase hybrids (alertName prefix → text).
+FAULT_HINTS = {
+    "F13": "змінився режим роботи (мережа/батарея)",
+    "F25": "проблема з батареєю на боці AC (інвертор втратив батарею під навантаженням)",
+    "F47": "завищена частота мережі — нестабільна мережа, часто при подачі/відключенні світла",
+    "F56": "низька напруга батареї (DC)",
+    "F58": "немає зв'язку з BMS батареї",
+    "F64": "перегрів радіатора інвертора",
+}
 
 
 class StaleData(RuntimeError):
@@ -98,8 +108,9 @@ class DeyeCloudClient:
     def stations(self) -> List[dict]:
         return self._post("/v1.0/station/list", {"page": 1, "size": 20}).get("stationList") or []
 
-    def devices(self) -> List[dict]:
-        return self._post("/v1.0/device/list", {"page": 1, "size": 50}).get("deviceList") or []
+    def devices(self, station_id: int) -> List[dict]:
+        # /device/list is not open to personal accounts; /station/device is.
+        return self._post("/v1.0/station/device", {"stationIds": [station_id]}).get("deviceListItems") or []
 
     def station_latest(self, station_id: int) -> dict:
         return self._post("/v1.0/station/latest", {"stationId": station_id})
@@ -154,7 +165,7 @@ class CloudReader:
                 raise DeyeCloudError("no stations in this Deye Cloud account")
             self.station_id = int(stations[0]["id"])
         if not self.device_sn:
-            inverters = [d for d in self.client.devices() if str(d.get("deviceType", "")).upper() == "INVERTER"]
+            inverters = [d for d in self.client.devices(self.station_id) if str(d.get("deviceType", "")).upper() == "INVERTER"]
             if inverters:
                 self.device_sn = str(inverters[0]["deviceSn"])
 
@@ -166,28 +177,37 @@ class CloudReader:
             raise StaleData(f"last cloud update {int(time.time() - updated)} s ago")
 
         points: Dict[str, Any] = {}
+        device: Dict[str, Any] = {}
         if self.device_sn:
             try:
-                points = device_points(self.client.device_latest(self.device_sn))
+                device = self.client.device_latest(self.device_sn)
+                points = device_points(device)
             except DeyeCloudError as exc:
                 log.warning("device/latest failed: %s", exc)
-        grid_power = _num(st.get("wirePower"))
+        def pick(point: str, station_key: str) -> float:
+            v = _num(points.get(point))
+            if v is None:
+                v = _num(st.get(station_key))
+            return v or 0.0
+
+        grid_power = _num(points.get("TotalGridPower"))
         if grid_power is None:
-            grid_power = _num(st.get("gridPower")) or 0.0
+            grid_power = _num(st.get("wirePower")) or _num(st.get("gridPower")) or 0.0
         voltage = find_grid_voltage(points, self.grid_voltage_key)
         if voltage is None:  # fallback: any grid flow means grid is present
             voltage = 230.0 if abs(grid_power) > 5 else 0.0
+        updated = max(updated, _parse_time(device.get("collectionTime")) or 0)
 
         return Reading(
             ts=updated,
             grid_voltage=voltage,
             grid_freq=_num(points.get("GridFrequency")) or 0.0,
             grid_power=int(grid_power),
-            load_power=int(_num(st.get("consumptionPower")) or 0),
-            pv_power=int(_num(st.get("generationPower")) or 0),
-            soc=int(_num(st.get("batterySOC")) or 0),
+            load_power=int(pick("TotalConsumptionPower", "consumptionPower")),
+            pv_power=int(pick("TotalDCInputPower", "generationPower")),
+            soc=int(pick("SOC", "batterySOC")),
             battery_voltage=_num(points.get("BatteryVoltage")) or 0.0,
-            battery_power=int(_num(st.get("batteryPower")) or 0),
+            battery_power=int(pick("BatteryPower", "batteryPower")),
             run_state=2,
             alarms=0,
             faults=0,

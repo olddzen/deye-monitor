@@ -49,9 +49,9 @@ def cloud_check(cfg: Config) -> None:
         print(f"  id={s.get('id')} name={s.get('name')!r} SOC={s.get('batterySOC')} "
               f"status={s.get('connectionStatus')} updated={s.get('lastUpdateTime')}")
     print("Devices:")
-    devices = client.devices()
+    devices = client.devices(int(cfg.cloud_station_id or stations[0]["id"])) if stations else []
     for d in devices:
-        print(f"  sn={d.get('deviceSn')} type={d.get('deviceType')} state={d.get('deviceState')}")
+        print(f"  sn={d.get('deviceSn')} type={d.get('deviceType')} online={d.get('connectStatus')}")
     if stations:
         latest = client.station_latest(int(cfg.cloud_station_id or stations[0]["id"]))
         print("Station latest:", json.dumps({k: v for k, v in latest.items()

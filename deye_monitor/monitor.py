@@ -149,14 +149,20 @@ class Monitor:
             if key in seen:
                 continue
             seen.append(key)
+            from .cloud import FAULT_HINTS
             level = {0: "Notice", 1: "Warning", 2: "Failure"}.get(int(a.get("level") or 0), "?")
-            closed = str(a.get("status")) == "0"
-            parts = [f"{'✅' if closed else '⚠️'} <b>Deye: {a.get('alertName') or a.get('alertCode')}</b> ({level})"]
-            if a.get("description"):
-                parts.append(str(a["description"]))
-            if a.get("solution") and not closed:
+            name = str(a.get("alertName") or a.get("alertCode") or "?")
+            parts = [f"⚠️ <b>Deye: {name}</b> ({level})"]
+            hint = a.get("description") or FAULT_HINTS.get(name.split("_")[0][:3])
+            if hint:
+                parts.append(str(hint))
+            start, end = a.get("alertStartTime"), a.get("alertEndTime")
+            if str(a.get("status")) == "0" and start and end:
+                parts.append(f"Тривала {fmt_duration(float(end) - float(start))}, вже минула "
+                             f"(о {fmt_time(float(end), self.cfg.tz)})")
+            if a.get("solution"):
                 parts.append(f"Що робити: {a['solution']}")
-            self._send(r.ts, "fault" if not closed else "fault_clear", "\n".join(parts))
+            self._send(r.ts, "fault", "\n".join(parts))
         self.db.set_state("seen_alerts", json.dumps(seen[-300:]))
 
     def _on_unreachable(self) -> None:

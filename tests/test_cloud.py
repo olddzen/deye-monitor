@@ -9,18 +9,19 @@ from tests.test_monitor import make, reading
 class FakeClient:
     def __init__(self, updated=None, points=None, wire=150.0, alerts=()):
         self.updated = updated if updated is not None else time.time() - 60
-        self.points = points if points is not None else [{"key": "GridVoltageL1", "value": "228.4", "unit": "V"}]
+        self.points = points if points is not None else [{"key": "GridVoltageL1L2", "value": "228.4", "unit": "V"},
+                                                          {"key": "SOC", "value": "87", "unit": "%"}]
         self.wire, self._alerts = wire, list(alerts)
 
     def stations(self):
         return [{"id": 42, "name": "Home"}]
 
-    def devices(self):
+    def devices(self, station_id):
         return [{"deviceSn": "2401010001", "deviceType": "INVERTER"}]
 
     def station_latest(self, sid):
         assert sid == 42
-        return {"batterySOC": 87.0, "batteryPower": -120.0, "consumptionPower": 310.0, "wirePower": self.wire,
+        return {"batterySOC": None, "batteryPower": -120.0, "consumptionPower": 310.0, "wirePower": self.wire,
                 "generationPower": 0.0, "lastUpdateTime": self.updated, "success": True}
 
     def device_latest(self, sn):
@@ -59,9 +60,11 @@ def test_helpers():
 def test_alert_notified_once_and_repeat_snapshot_ignored():
     mon, sent, _ = make()
     t = 3_000_000.0
-    alert = {"alertId": "x1", "level": 2, "alertName": "Battery over temp", "status": 1}
+    alert = {"alertId": "x1", "level": 2, "alertName": "F47AC_OverFreq_Fault", "status": 0,
+             "alertStartTime": t - 600, "alertEndTime": t - 300}
     mon.handle(reading(t, alerts=[alert]))
     mon.handle(reading(t, alerts=[alert]))           # same cloud upload polled again
     mon.handle(reading(t, volts=0))                  # same ts → grid change ignored
-    assert sum("Battery over temp" in m for m in sent) == 1
+    assert sum("F47AC_OverFreq_Fault" in m for m in sent) == 1
+    assert "частота" in sent[0] and "Тривала 5 хв" in sent[0]
     assert not any("вимкнули" in m for m in sent)
