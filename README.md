@@ -85,6 +85,23 @@ docker compose up -d --build
    (без неї світло визначається за потоком потужності з мережі, це менш точно).
 5. Запусти на сервері: `docker compose up -d --build`.
 
+### Безкоштовно на GitHub Actions (без сервера)
+
+Workflow `.github/workflows/monitor.yml` раз на ~5–15 хв запускає `python -m deye_monitor once`:
+одна перевірка + відповіді на команди бота. Історія відключень зберігається в кеші Actions.
+
+1. Репозиторій має бути **публічним**: для публічних репозиторіїв хвилини Actions безкоштовні.
+   У коді немає жодних ключів, усе зберігається в Secrets.
+2. Settings → Secrets and variables → Actions → додай секрети:
+   `DEYE_CLOUD_APP_ID`, `DEYE_CLOUD_APP_SECRET`, `DEYE_CLOUD_EMAIL`, `DEYE_CLOUD_PASSWORD_SHA256`,
+   `DEYE_CLOUD_STATION_ID`, `DEYE_CLOUD_DEVICE_SN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+3. Actions → Deye monitor → **Run workflow**, щоб перевірити.
+
+Мінуси: GitHub запускає cron із затримкою, тому сповіщення приходять через 5–20 хв, а бот відповідає
+на команди при наступному запуску. Workflow `keepalive.yml` не дає GitHub вимкнути розклад через 60 днів.
+
+### Або на сервері 24/7
+
 Безкоштовний або дешевий сервер, що працює 24/7: Oracle Cloud Always Free, Google Cloud e2-micro (free tier),
 або будь-який VPS за ~3–5 €/міс (Hetzner, DigitalOcean). Достатньо найменшого тарифу.
 

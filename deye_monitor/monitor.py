@@ -56,6 +56,30 @@ class Monitor:
         self.soc_fired: Set[int] = set()
         self.last_sample = 0.0
 
+    # ---------- state between one-shot runs (GitHub Actions) ----------
+    def save_state(self) -> None:
+        self.db.set_state("monitor", json.dumps({
+            "last": self.last.as_dict() if self.last else None,
+            "last_ok": self.last_ok,
+            "unreachable_alerted": self.unreachable_alerted,
+            "problem_sig": list(self.problem_sig) if self.problem_sig else None,
+            "soc_fired": sorted(self.soc_fired),
+            "last_sample": self.last_sample,
+        }))
+
+    def load_state(self) -> None:
+        raw = self.db.get_state("monitor")
+        if not raw:
+            return
+        st = json.loads(raw)
+        if st.get("last"):
+            self.last = Reading(**st["last"])
+        self.last_ok = st.get("last_ok", self.last_ok)
+        self.unreachable_alerted = st.get("unreachable_alerted", False)
+        self.problem_sig = tuple(st["problem_sig"]) if st.get("problem_sig") else None
+        self.soc_fired = set(st.get("soc_fired") or [])
+        self.last_sample = st.get("last_sample", 0.0)
+
     # ---------- polling ----------
     def tick(self) -> None:
         try:

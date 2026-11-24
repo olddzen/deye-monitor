@@ -50,15 +50,19 @@ class Telegram:
         offset = 0
         while True:
             try:
-                updates = self._call("getUpdates", http_timeout=60, offset=offset, timeout=50,
-                                     allowed_updates=["message"])
+                offset = self.poll_once(handlers, offset, wait=50)
             except Exception as exc:
                 log.warning("getUpdates failed: %s", exc)
                 time.sleep(5)
-                continue
-            for upd in updates:
-                offset = upd["update_id"] + 1
-                self._handle(upd.get("message") or {}, handlers)
+
+    def poll_once(self, handlers: Dict[str, Callable[[], str]], offset: int, wait: int = 0) -> int:
+        """Answer pending commands once; returns the next offset."""
+        updates = self._call("getUpdates", http_timeout=wait + 15, offset=offset, timeout=wait,
+                             allowed_updates=["message"])
+        for upd in updates:
+            offset = upd["update_id"] + 1
+            self._handle(upd.get("message") or {}, handlers)
+        return offset
 
     def _handle(self, msg: dict, handlers: Dict[str, Callable[[], str]]) -> None:
         chat = (msg.get("chat") or {}).get("id")

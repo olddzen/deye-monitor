@@ -1,0 +1,58 @@
+name: Deye monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub runs this every 5–15 min in practice
+  workflow_dispatch:
+
+concurrency:
+  group: deye-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # The SQLite file (outage history, last state) lives in the Actions cache between runs.
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: deye-db-${{ github.run_id }}
+          restore-keys: deye-db-
+
+      - name: Check inverter and answer bot commands
+        run: python -m deye_monitor once
+        env:
+          DEYE_ENV_FILE: /dev/null
+          DEYE_MODE: cloud
+          DEYE_CLOUD_APP_ID: ${{ secrets.DEYE_CLOUD_APP_ID }}
+          DEYE_CLOUD_APP_SECRET: ${{ secrets.DEYE_CLOUD_APP_SECRET }}
+          DEYE_CLOUD_EMAIL: ${{ secrets.DEYE_CLOUD_EMAIL }}
+          DEYE_CLOUD_PASSWORD_SHA256: ${{ secrets.DEYE_CLOUD_PASSWORD_SHA256 }}
+          DEYE_CLOUD_STATION_ID: ${{ secrets.DEYE_CLOUD_STATION_ID }}
+          DEYE_CLOUD_DEVICE_SN: ${{ secrets.DEYE_CLOUD_DEVICE_SN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # runs are 5–15 min apart, so alert on lost data a bit later than an always-on server
+          UNREACHABLE_ALERT_AFTER: "900"
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: deye-db-${{ github.run_id }}

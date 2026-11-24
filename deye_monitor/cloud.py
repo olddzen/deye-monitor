@@ -156,7 +156,6 @@ class CloudReader:
         self.station_id, self.device_sn = station_id, device_sn
         self.grid_voltage_key = grid_voltage_key
         self.stale_after, self.alert_min_level = stale_after, alert_min_level
-        self._alerts_checked = time.time() - 3600
 
     def _resolve(self) -> None:
         if not self.station_id:
@@ -218,10 +217,9 @@ class CloudReader:
         if not self.device_sn:
             return []
         now = time.time()
-        try:
-            items = self.client.alerts(self.device_sn, self._alerts_checked - 600, now)
+        try:  # fixed look-back; already-sent alerts are filtered by the monitor
+            items = self.client.alerts(self.device_sn, now - 6 * 3600, now)
         except DeyeCloudError as exc:
             log.warning("alertList failed: %s", exc)
             return []
-        self._alerts_checked = now
         return [a for a in items if int(_num(a.get("level")) or 0) >= self.alert_min_level]

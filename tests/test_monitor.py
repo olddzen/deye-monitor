@@ -96,3 +96,18 @@ def test_fmt_duration():
     assert fmt_duration(30) == "менше хвилини"
     assert fmt_duration(3 * 3600 + 12 * 60) == "3 год 12 хв"
     assert fmt_duration(26 * 3600) == "1 д 2 год"
+
+
+def test_state_survives_restart():
+    mon, sent, _ = make(debounce=1)
+    t = 4_000_000.0
+    mon.handle(reading(t))
+    mon.handle(reading(t + 60, volts=0, soc=25))     # off + battery alert
+    mon.save_state()
+    mon2 = Monitor(mon.cfg, mon.db, mon.reader, sent.append, clock=mon.clock)
+    mon2.load_state()
+    mon2.handle(reading(t + 60, volts=0, soc=25))    # same snapshot after restart: nothing new
+    mon2.handle(reading(t + 120, volts=0, soc=24))   # same level: no repeat alert
+    mon2.handle(reading(t + 180, volts=231))
+    assert sum("Батарея" in m and "поріг" in m for m in sent) == 1
+    assert "дали" in sent[-1]

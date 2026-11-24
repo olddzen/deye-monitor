@@ -91,16 +91,39 @@ def run(cfg: Config) -> None:
         time.sleep(max(1.0, cfg.poll_interval - (time.monotonic() - started)))
 
 
+def once(cfg: Config) -> None:
+    """One poll + answer pending bot commands, then exit. For cron / GitHub Actions."""
+    db = Storage(cfg.db_path)
+    tg = None
+    if cfg.tg_token:
+        from .telegram import Telegram
+        tg = Telegram(cfg.tg_token, cfg.tg_chat_id)
+    notify = tg.send if tg else (lambda text: log.info("NOTIFY: %s", text))
+    mon = Monitor(cfg, db, make_reader(cfg), notify)
+    mon.load_state()
+    mon.tick()
+    mon.save_state()
+    if tg:
+        handlers = {"status": mon.cmd_status, "stats": mon.cmd_stats,
+                    "history": mon.cmd_history, "errors": mon.cmd_errors}
+        try:
+            offset = tg.poll_once(handlers, int(db.get_state("tg_offset") or 0))
+            db.set_state("tg_offset", str(offset))
+        except Exception as exc:
+            log.warning("telegram poll failed: %s", exc)
+    log.info("once: grid=%s", {True: "on", False: "off", None: "?"}[mon.detector.state])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="deye_monitor")
-    parser.add_argument("command", nargs="?", default="run", choices=["run", "probe", "cloud-check"])
+    parser.add_argument("command", nargs="?", default="run", choices=["run", "once", "probe", "cloud-check"])
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = Config.from_env()
     cfg.validate()
-    {"probe": probe, "cloud-check": cloud_check}.get(args.command, run)(cfg)
+    {"probe": probe, "once": once, "cloud-check": cloud_check}.get(args.command, run)(cfg)
 
 
 if __name__ == "__main__":
