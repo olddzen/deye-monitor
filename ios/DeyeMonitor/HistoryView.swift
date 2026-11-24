@@ -11,6 +11,7 @@ struct HistoryView: View {
                 if let stats = store.response?.data {
                     summary(stats.week)
                     if let charts = store.charts {
+                        OutageCalendar(days: stats.daily30 ?? [], version: charts.version).equatable()
                         HeatmapCard(rows: stats.heatmap28 ?? [], version: charts.version).equatable()
                         ChargeChart(model: charts).equatable()
                         LoadChart(model: charts).equatable()

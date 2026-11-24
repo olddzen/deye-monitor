@@ -29,6 +29,7 @@ final class Store: ObservableObject {
             }
             response = r
             error = nil
+            LiveActivityManager.sync(with: r.live)
             let grid = r.live?.gridOn
             if grid != lastGridOn || Date.now.timeIntervalSince(lastWidgetReload) > 600 {
                 WidgetCenter.shared.reloadAllTimelines()
@@ -61,7 +62,7 @@ struct ContentView: View {
         }
         .tint(state.accent)
         .sensoryFeedback(.impact(weight: .medium), trigger: store.response?.live?.gridOn)
-        .task { await store.refresh() }
+        .task { LiveActivityManager.demoIfRequested(); await store.refresh() }
         .onReceive(timer) { _ in Task { await store.refresh() } }
         .onChange(of: phase) { _, new in if new == .active { Task { await store.refresh() } } }
     }

@@ -15,6 +15,7 @@ struct NowView: View {
                     Hero(live: live, stats: stats, state: state)
                         .padding(.vertical, 18)
                     BatteryCard(live: live, state: state)
+                    CalculatorCard(live: live, stats: stats)
                     FlowCard(live: live)
                 } else if let error = store.error {
                     Text(error).foregroundStyle(.secondary).glassCard()

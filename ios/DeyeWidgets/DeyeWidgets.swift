@@ -5,6 +5,10 @@ import WidgetKit
 struct DeyeWidgetsBundle: WidgetBundle {
     var body: some Widget {
         PowerWidget()
+        OutageLiveActivity()
+        if #available(iOS 18.0, *) {
+            PowerControl()
+        }
     }
 }
 

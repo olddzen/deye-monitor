@@ -6,5 +6,7 @@
 	<string>$(DEYE_API_BASE)</string>
 	<key>DeyeAppToken</key>
 	<string>$(DEYE_APP_TOKEN)</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 </dict>
 </plist>

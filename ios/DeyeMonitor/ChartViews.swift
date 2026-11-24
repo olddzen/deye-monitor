@@ -223,7 +223,7 @@ struct HeatmapCard: View, Equatable {
                     if let (w, h) = picked {
                         Text("\(days[w]) \(String(format: "%02d", h)):00–\(String(format: "%02d", h + 1)):00 · без світла \(Int(rows[w][h] * 100))% днів")
                     } else {
-                        Text("Торкнись клітинки · темніше — частіше без світла")
+                        Text("Торкнись клітинки · що яскравіша, то частіше без світла")
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
