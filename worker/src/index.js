@@ -4,6 +4,8 @@
 //  - Cron every minute: live alerts (grid on/off, low battery, Deye failures, lost data) straight
 //    from Deye Cloud; every 5 min it also starts the GitHub workflow (history, stats, reports).
 
+import APP_HTML from "./app.html";
+
 const DEYE_URL = "https://eu1-developer.deyecloud.com";
 const GRID_MIN_V = 180;
 const STALE_MIN = 20;
@@ -15,7 +17,8 @@ const REPORT_COMMANDS = {
   stats: "Коротка статистика відключень",
   errors: "Серйозні помилки інвертора",
 };
-const COMMANDS = { status: "Чи є світло зараз, заряд батареї (миттєво)", ...REPORT_COMMANDS };
+const COMMANDS = { status: "Чи є світло зараз, заряд батареї (миттєво)",
+                   dashboard: "Дашборд: графіки, батарея, відключення", ...REPORT_COMMANDS };
 const SOC_ALERTS = [30, 15];
 const CACHE_MAX_AGE_MIN = 30;
 const FAULT_HINTS = {
@@ -49,6 +52,11 @@ export default {
       await env.KV.put("reports", body);
       return new Response("stored");
     }
+    if (request.method === "GET" && (url.pathname === "/app" || url.pathname === "/app/")) {
+      return new Response(APP_HTML, { headers: { "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" } });
+    }
+    if (request.method === "GET" && url.pathname === "/api/data") return dashboardData(request, env);
     return new Response("deye-monitor bot\n");
   },
 
@@ -78,6 +86,10 @@ async function handleUpdate(update, env) {
     }
     return sendMessage(env, reply);
   }
+  if (cmd === "dashboard" || cmd === "app") {
+    return sendMessage(env, "📊 Дашборд", { inline_keyboard: [[{ text: "Відкрити дашборд",
+      web_app: { url: `https://${env.WORKER_HOST}/app` } }]] });
+  }
   if (cmd in REPORT_COMMANDS) {
     const cache = await env.KV.get("reports", "json").catch(() => null);
     const item = cache && cache.items && cache.items[cmd];
@@ -97,12 +109,12 @@ async function handleUpdate(update, env) {
   return sendMessage(env, `Команди:\n${help}`);
 }
 
-async function sendMessage(env, text) {
+async function sendMessage(env, text, replyMarkup) {
   const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text, parse_mode: "HTML",
-                           disable_web_page_preview: true }),
+                           disable_web_page_preview: true, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
   });
   if (!resp.ok) console.log("sendMessage failed:", resp.status);
 }
@@ -271,7 +283,8 @@ async function deye(env, path, body, retry = true) {
   return data;
 }
 
-async function statusText(env) {
+// Live snapshot shared by /status and the dashboard.
+async function liveData(env) {
   const sn = env.DEYE_CLOUD_DEVICE_SN;
   const nowSec = Date.now() / 1000;
   const [latest, history] = await Promise.all([
@@ -286,7 +299,6 @@ async function statusText(env) {
   const num = (k) => (p[k] === undefined || p[k] === null || p[k] === "" ? null : Number(p[k]));
 
   const updated = Number(dev.collectionTime) || null;
-  const ageMin = updated ? (nowSec - updated) / 60 : null;
   const voltage = num("GridVoltageL1L2");
   const gridOn = voltage !== null && voltage >= GRID_MIN_V;
 
@@ -301,45 +313,89 @@ async function statusText(env) {
     if (i < 0) beyondDay = true;
     else since = (pts[i].t + pts[i + 1].t) / 2;
   }
-
-  const lines = [];
-  const holds = since ? ` вже ${duration(nowSec - since)}` : beyondDay ? " понад добу" : "";
-  lines.push(gridOn ? `<b>💡 Світло є${holds}</b>` : `<b>🔌 Світла немає${holds}</b>`);
-  if (since && !gridOn) lines.push(`вимкнули о ${clock(since)}`);
-
-  const soc = num("SOC");
+  const socRaw = num("SOC");
   const bmsTemp = num("Temperature- Battery");
-  if (soc === null || soc <= 0 || (bmsTemp !== null && bmsTemp <= -50)) {
+  const bmsSilent = socRaw === null || socRaw <= 0 || (bmsTemp !== null && bmsTemp <= -50);
+  const batteryPower = bmsSilent ? null : num("BatteryPower") || 0;
+  const soc = bmsSilent ? null : socRaw;
+  const runtimeH = soc !== null && batteryPower > 50 ? Math.max(0, ((soc - 10) / 100) * 11800 / batteryPower) : null;
+  return {
+    now: nowSec, updated, stale: !updated || nowSec - updated > STALE_MIN * 60,
+    gridOn, since, beyondDay, voltage, freq: num("GridFrequency"),
+    gridPower: num("TotalGridPower"), load: num("TotalConsumptionPower"),
+    soc, batteryPower, runtimeH,
+    batteryTemp: bmsSilent ? null : bmsTemp, inverterTemp: num("DC Temperature"),
+    relay: p.GridRelayStatus || null,
+  };
+}
+
+async function statusText(env) {
+  const d = await liveData(env);
+  const lines = [];
+  const holds = d.since ? ` вже ${duration(d.now - d.since)}` : d.beyondDay ? " понад добу" : "";
+  lines.push(d.gridOn ? `<b>💡 Світло є${holds}</b>` : `<b>🔌 Світла немає${holds}</b>`);
+  if (d.since && !d.gridOn) lines.push(`вимкнули о ${clock(d.since)}`);
+  if (d.soc === null) {
     lines.push("🔋 немає даних від BMS");
   } else {
-    const bp = num("BatteryPower") || 0;
+    const bp = d.batteryPower;
     const mode = bp < -20 ? "заряджається" : bp > 20 ? "розряджається" : "у спокої";
-    let bat = `🔋 ${soc}% (${mode}, ${Math.abs(bp)} Вт)`;
-    if (bp > 50) {
-      const hours = ((soc - 10) / 100) * 11800 / bp;
-      if (hours > 0) bat += `, вистачить ≈ ${duration(hours * 3600)}`;
-    }
-    lines.push(bat);
+    lines.push(`🔋 ${d.soc}% (${mode}, ${Math.abs(bp)} Вт)` +
+      (d.runtimeH ? `, вистачить ≈ ${duration(d.runtimeH * 3600)}` : ""));
   }
-  const load = num("TotalConsumptionPower");
-  if (load !== null) lines.push(`🏠 Навантаження: ${load} Вт`);
-  if (voltage !== null) {
-    const f = num("GridFrequency");
-    lines.push(`⚡ Мережа: ${Math.round(voltage)} В${f ? `, ${f.toFixed(1)} Гц` : ""}`);
+  if (d.load !== null) lines.push(`🏠 Навантаження: ${d.load} Вт`);
+  if (d.voltage !== null) {
+    lines.push(`⚡ Мережа: ${Math.round(d.voltage)} В${d.freq ? `, ${d.freq.toFixed(1)} Гц` : ""}`);
   }
   const temps = [];
-  if (bmsTemp !== null && bmsTemp > -50) temps.push(`батарея ${Math.round(bmsTemp)} °C`);
-  const dc = num("DC Temperature");
-  if (dc !== null) temps.push(`інвертор ${Math.round(dc)} °C`);
+  if (d.batteryTemp !== null) temps.push(`батарея ${Math.round(d.batteryTemp)} °C`);
+  if (d.inverterTemp !== null) temps.push(`інвертор ${Math.round(d.inverterTemp)} °C`);
   if (temps.length) lines.push(`🌡 ${temps.join(", ")}`);
-  if (ageMin !== null) {
-    if (ageMin > STALE_MIN) {
-      lines.push(`⚠️ Deye не отримує даних ${duration(ageMin * 60)}: можливо, у квартирі немає світла й інтернету`);
-    } else {
-      lines.push(`⏱ дані Deye на ${clock(updated)} (${Math.max(0, Math.round(ageMin))} хв тому)`);
-    }
+  if (d.updated) {
+    const ageMin = (d.now - d.updated) / 60;
+    lines.push(d.stale
+      ? `⚠️ Deye не отримує даних ${duration(ageMin * 60)}: можливо, у квартирі немає світла й інтернету`
+      : `⏱ дані Deye на ${clock(d.updated)} (${Math.max(0, Math.round(ageMin))} хв тому)`);
   }
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------- Mini App
+// Telegram signs initData with the bot token; only the owner may read the dashboard data.
+async function verifyInitData(initData, env) {
+  if (!initData) return false;
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return false;
+  params.delete("hash");
+  const check = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join("\n");
+  const enc = new TextEncoder();
+  const hmac = async (key, msg) => new Uint8Array(await crypto.subtle.sign("HMAC",
+    await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]), enc.encode(msg)));
+  const secret = await hmac(enc.encode("WebAppData"), env.TELEGRAM_BOT_TOKEN);
+  const sig = [...(await hmac(secret, check))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (sig.length !== hash.length) return false;
+  let diff = 0;
+  for (let i = 0; i < sig.length; i++) diff |= sig.charCodeAt(i) ^ hash.charCodeAt(i);
+  if (diff) return false;
+  const authDate = Number(params.get("auth_date"));
+  if (!authDate || Date.now() / 1000 - authDate > 86400) return false;
+  let user = null;
+  try { user = JSON.parse(params.get("user") || "null"); } catch { return false; }
+  return !!user && String(user.id) === String(env.TELEGRAM_CHAT_ID);
+}
+
+async function dashboardData(request, env) {
+  if (!(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
+    return new Response("forbidden", { status: 403 });
+  }
+  const [live, cache] = await Promise.all([
+    liveData(env).catch((e) => ({ error: String(e.message || e.name) })),
+    env.KV.get("reports", "json").catch(() => null),
+  ]);
+  return new Response(JSON.stringify({ live, data: cache && cache.data, generated_at: cache && cache.generated_at }), {
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
 }
 
 // ---------------------------------------------------------------- formatting

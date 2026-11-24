@@ -137,6 +137,16 @@ Cron GitHub Actions ненадійний (може не запускатись �
 fine-grained токен лише на цей репозиторій з правом **Actions: Read and write**. Далі Telegram `setWebhook` на
 `https://<worker>.workers.dev/telegram` з `secret_token` = `TELEGRAM_WEBHOOK_SECRET`.
 
+### Дашборд у Telegram (Mini App)
+
+Кнопка «📊 Дашборд» у меню бота (або `/dashboard`) відкриває сторінку воркера `/app`: стан світла,
+кільце заряду, потоки енергії наживо, стрічка «сьогодні», графіки заряду й споживання за 7 днів,
+теплова карта «коли немає світла» за 4 тижні, години без світла по днях, історія відключень, батарея,
+мережа, аварії. Дані віддає `/api/data` лише після перевірки підпису Telegram (`initData`) і лише
+власнику (`TELEGRAM_CHAT_ID`). Меню: `setChatMenuButton` з `web_app.url = https://<worker>/app`.
+
+Щоранку о `MORNING_HOUR` (за замовчуванням 8) бот надсилає підсумок ночі.
+
 ### Або на сервері 24/7
 
 Безкоштовний або дешевий сервер, що працює 24/7: Oracle Cloud Always Free, Google Cloud e2-micro (free tier),

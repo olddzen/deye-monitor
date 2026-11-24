@@ -68,6 +68,7 @@ class Config:
     backfill_days: int = 45
     worker_url: str = ""
     cache_secret: str = ""
+    morning_hour: int = 8  # local hour for the morning summary; -1 disables it
     live_alerts: str = "python"  # "worker": the Cloudflare worker sends live alerts, Python stays quiet
 
     @classmethod
@@ -115,6 +116,7 @@ class Config:
             worker_url=os.environ.get("WORKER_URL", "").strip().rstrip("/"),
             cache_secret=os.environ.get("CACHE_SECRET", "").strip(),
             live_alerts=os.environ.get("LIVE_ALERTS", "python").strip().lower(),
+            morning_hour=_int("MORNING_HOUR", 8),
         )
 
     def validate(self) -> None:

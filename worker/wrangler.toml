@@ -11,6 +11,12 @@ workers_dev = true
 [vars]
 GITHUB_REPO = "olddzen/deye-monitor"
 DEYE_CLOUD_URL = "https://eu1-developer.deyecloud.com"
+WORKER_HOST = "deye-monitor-bot.dzenplanning.workers.dev"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
 
 [triggers]
 crons = ["* * * * *"]  # live alerts every minute; GitHub workflow every 5th minute

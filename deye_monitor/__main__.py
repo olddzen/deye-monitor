@@ -111,6 +111,20 @@ def maintenance(cfg: Config, db: Storage, reader, tg, mon: Optional[Monitor] = N
             send_due_reports(db, cfg, now, tg.send, tg.send_photo)
         except Exception as exc:
             log.warning("reports failed: %s", exc)
+        send_morning(cfg, db, tg, mon, now)
+
+
+def send_morning(cfg: Config, db: Storage, tg, mon: Optional[Monitor], now: float) -> None:
+    from .dashboard import last_point_soc, morning_due, morning_text
+    key = morning_due(db, cfg, now)
+    if not key:
+        return
+    try:
+        grid = mon.detector.state if mon else None
+        tg.send(morning_text(db, cfg, now, last_point_soc(db, now), grid))
+        db.set_state("last_morning", key)
+    except Exception as exc:
+        log.warning("morning summary failed: %s", type(exc).__name__)
 
 
 def run(cfg: Config) -> None:
@@ -174,8 +188,14 @@ def publish_cache(cfg: Config, mon: Monitor) -> None:
             continue
         text, png = reply if isinstance(reply, tuple) else (reply, None)
         items[cmd] = {"text": text, "png": base64.b64encode(png).decode() if png else None}
+    payload = {"generated_at": time.time(), "items": items}
     try:
-        resp = requests.post(f"{cfg.worker_url}/cache", json={"generated_at": time.time(), "items": items},
+        from .dashboard import build_data
+        payload["data"] = build_data(mon.db, cfg, time.time())
+    except Exception as exc:
+        log.warning("dashboard data failed: %s", type(exc).__name__)
+    try:
+        resp = requests.post(f"{cfg.worker_url}/cache", json=payload,
                              headers={"X-Cache-Secret": cfg.cache_secret}, timeout=30)
         if resp.status_code != 200:
             log.warning("cache upload: HTTP %s", resp.status_code)
