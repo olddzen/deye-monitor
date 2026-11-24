@@ -15,9 +15,19 @@ from .storage import Storage
 log = logging.getLogger("deye_monitor")
 
 
+def cloud_client(cfg: Config):
+    from .cloud import DeyeCloudClient
+    return DeyeCloudClient(cfg.cloud_url, cfg.cloud_app_id, cfg.cloud_app_secret,
+                           cfg.cloud_email, cfg.cloud_password_sha256)
+
+
 def make_reader(cfg: Config):
     if cfg.mode == "simulate":
         return SimulatedReader()
+    if cfg.mode == "cloud":
+        from .cloud import CloudReader
+        return CloudReader(cloud_client(cfg), cfg.cloud_station_id, cfg.cloud_device_sn,
+                           cfg.cloud_grid_voltage_key, cfg.cloud_stale_after, cfg.alert_min_level)
     return SolarmanReader(cfg.logger_ip, cfg.logger_serial, cfg.logger_port, cfg.slave_id)
 
 
@@ -27,6 +37,34 @@ def probe(cfg: Config) -> None:
     data = r.as_dict()
     data["run_state_name"] = r.run_state_name
     print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def cloud_check(cfg: Config) -> None:
+    """Show what Deye Cloud returns for this account: stations, devices, data point names."""
+    from .cloud import device_points, find_grid_voltage
+    client = cloud_client(cfg)
+    stations = client.stations()
+    print("Stations:")
+    for s in stations:
+        print(f"  id={s.get('id')} name={s.get('name')!r} SOC={s.get('batterySOC')} "
+              f"status={s.get('connectionStatus')} updated={s.get('lastUpdateTime')}")
+    print("Devices:")
+    devices = client.devices()
+    for d in devices:
+        print(f"  sn={d.get('deviceSn')} type={d.get('deviceType')} state={d.get('deviceState')}")
+    if stations:
+        latest = client.station_latest(int(cfg.cloud_station_id or stations[0]["id"]))
+        print("Station latest:", json.dumps({k: v for k, v in latest.items()
+                                             if k not in ("code", "msg", "requestId", "success")},
+                                            ensure_ascii=False))
+    sn = cfg.cloud_device_sn or next((d["deviceSn"] for d in devices
+                                      if str(d.get("deviceType", "")).upper() == "INVERTER"), "")
+    if sn:
+        points = device_points(client.device_latest(sn))
+        print(f"Inverter {sn} data points ({len(points)}):")
+        for k, v in sorted(points.items()):
+            print(f"  {k} = {v}")
+        print("Detected grid voltage:", find_grid_voltage(points, cfg.cloud_grid_voltage_key))
 
 
 def run(cfg: Config) -> None:
@@ -55,14 +93,14 @@ def run(cfg: Config) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="deye_monitor")
-    parser.add_argument("command", nargs="?", default="run", choices=["run", "probe"])
+    parser.add_argument("command", nargs="?", default="run", choices=["run", "probe", "cloud-check"])
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = Config.from_env()
     cfg.validate()
-    probe(cfg) if args.command == "probe" else run(cfg)
+    {"probe": probe, "cloud-check": cloud_check}.get(args.command, run)(cfg)
 
 
 if __name__ == "__main__":

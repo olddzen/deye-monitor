@@ -82,7 +82,7 @@ def test_fault_and_unreachable():
     assert sum("Fault" in m for m in sent) == 1 and "зникла" in sent[-1]
     clock["t"] = t + 90 + 700
     mon.tick()
-    assert "Немає зв'язку" in sent[-1]
+    assert "Немає даних" in sent[-1]
     mon.handle(reading(clock["t"] + 30))
     assert "відновлено" in sent[-1]
 

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
+from typing import List
 
 
 RUN_STATES = {0: "Standby", 1: "Self-check", 2: "Normal", 3: "Alarm", 4: "Fault"}
@@ -46,6 +47,7 @@ class Reading:
     run_state: int
     alarms: int
     faults: int
+    alerts: List[dict] = field(default_factory=list)  # cloud mode: new serious alerts
 
     @property
     def run_state_name(self) -> str:

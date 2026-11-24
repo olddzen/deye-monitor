@@ -52,22 +52,38 @@ class Config:
     tg_chat_id: Optional[int]
     db_path: str
     tz: str
+    cloud_url: str = "https://eu1-developer.deyecloud.com"
+    cloud_app_id: str = ""
+    cloud_app_secret: str = ""
+    cloud_email: str = ""
+    cloud_password_sha256: str = ""
+    cloud_station_id: Optional[int] = None
+    cloud_device_sn: str = ""
+    cloud_grid_voltage_key: str = ""
+    cloud_stale_after: int = 1200
+    alert_min_level: int = 2
 
     @classmethod
     def from_env(cls) -> "Config":
         load_dotenv(os.environ.get("DEYE_ENV_FILE", ".env"))
         chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
         soc = os.environ.get("SOC_ALERTS", "30,15").strip()
+        mode = os.environ.get("DEYE_MODE", "local").strip().lower()
+        password_hash = os.environ.get("DEYE_CLOUD_PASSWORD_SHA256", "").strip().lower()
+        if not password_hash and os.environ.get("DEYE_CLOUD_PASSWORD"):
+            import hashlib
+            password_hash = hashlib.sha256(os.environ["DEYE_CLOUD_PASSWORD"].encode("utf-8")).hexdigest()
+        station = os.environ.get("DEYE_CLOUD_STATION_ID", "").strip()
         return cls(
-            mode=os.environ.get("DEYE_MODE", "local").strip().lower(),
+            mode=mode,
             logger_ip=os.environ.get("DEYE_LOGGER_IP", "").strip(),
             logger_serial=_int("DEYE_LOGGER_SERIAL", 0),
             logger_port=_int("DEYE_LOGGER_PORT", 8899),
             slave_id=_int("DEYE_SLAVE_ID", 1),
-            poll_interval=_int("POLL_INTERVAL", 30),
+            poll_interval=_int("POLL_INTERVAL", 120 if mode == "cloud" else 30),
             grid_voltage_min=_float("GRID_VOLTAGE_MIN", 180.0),
-            debounce=_int("DEBOUNCE_READINGS", 2),
-            unreachable_alert_after=_int("UNREACHABLE_ALERT_AFTER", 600),
+            debounce=_int("DEBOUNCE_READINGS", 1 if mode == "cloud" else 2),
+            unreachable_alert_after=_int("UNREACHABLE_ALERT_AFTER", 300 if mode == "cloud" else 600),
             soc_alerts=tuple(sorted((int(x) for x in soc.split(",") if x.strip()), reverse=True)),
             sample_every=_int("SAMPLE_EVERY", 300),
             keep_days=_int("KEEP_SAMPLES_DAYS", 90),
@@ -75,10 +91,24 @@ class Config:
             tg_chat_id=int(chat) if chat else None,
             db_path=os.environ.get("DB_PATH", "data/deye.sqlite3"),
             tz=os.environ.get("TZ_NAME", "Europe/Kyiv"),
+            cloud_url=os.environ.get("DEYE_CLOUD_URL", "https://eu1-developer.deyecloud.com").strip(),
+            cloud_app_id=os.environ.get("DEYE_CLOUD_APP_ID", "").strip(),
+            cloud_app_secret=os.environ.get("DEYE_CLOUD_APP_SECRET", "").strip(),
+            cloud_email=os.environ.get("DEYE_CLOUD_EMAIL", "").strip(),
+            cloud_password_sha256=password_hash,
+            cloud_station_id=int(station) if station else None,
+            cloud_device_sn=os.environ.get("DEYE_CLOUD_DEVICE_SN", "").strip(),
+            cloud_grid_voltage_key=os.environ.get("DEYE_CLOUD_GRID_VOLTAGE_KEY", "").strip(),
+            cloud_stale_after=_int("DEYE_CLOUD_STALE_AFTER", 1200),
+            alert_min_level=_int("ALERT_MIN_LEVEL", 2),
         )
 
     def validate(self) -> None:
-        if self.mode not in ("local", "simulate"):
-            raise SystemExit(f"DEYE_MODE must be 'local' or 'simulate', got {self.mode!r}")
+        if self.mode not in ("local", "cloud", "simulate"):
+            raise SystemExit(f"DEYE_MODE must be 'local', 'cloud' or 'simulate', got {self.mode!r}")
+        if self.mode == "cloud" and not all((self.cloud_app_id, self.cloud_app_secret,
+                                             self.cloud_email, self.cloud_password_sha256)):
+            raise SystemExit("Cloud mode needs DEYE_CLOUD_APP_ID, DEYE_CLOUD_APP_SECRET, "
+                             "DEYE_CLOUD_EMAIL and DEYE_CLOUD_PASSWORD (see README)")
         if self.mode == "local" and (not self.logger_ip or not self.logger_serial):
             raise SystemExit("Set DEYE_LOGGER_IP and DEYE_LOGGER_SERIAL in .env (see README)")

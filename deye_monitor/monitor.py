@@ -1,6 +1,7 @@
 """Core logic: turn raw inverter readings into a few meaningful events."""
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Callable, Optional, Set, Tuple
@@ -67,11 +68,15 @@ class Monitor:
 
     def handle(self, r: Reading) -> None:
         now = r.ts
+        fresh = self.last is None or r.ts > self.last.ts
         if self.unreachable_alerted:
             self._send(now, "link", "📶 Зв'язок з інвертором відновлено")
         self.unreachable_alerted = False
-        self.last_ok = now
+        self.last_ok = self.clock()
         self.last = r
+        self._check_alerts(r)
+        if not fresh:  # cloud mode: same upload as last poll
+            return
 
         self._check_grid(r)
         self._check_battery(r)
@@ -135,12 +140,32 @@ class Monitor:
             self._send(r.ts, "fault_clear", "✅ Помилка інвертора зникла, стан Normal")
         self.problem_sig = sig
 
+    def _check_alerts(self, r: Reading) -> None:
+        if not r.alerts:
+            return
+        seen = json.loads(self.db.get_state("seen_alerts") or "[]")
+        for a in r.alerts:
+            key = str(a.get("alertId") or (a.get("alertCode"), a.get("alertStartTime")))
+            if key in seen:
+                continue
+            seen.append(key)
+            level = {0: "Notice", 1: "Warning", 2: "Failure"}.get(int(a.get("level") or 0), "?")
+            closed = str(a.get("status")) == "0"
+            parts = [f"{'✅' if closed else '⚠️'} <b>Deye: {a.get('alertName') or a.get('alertCode')}</b> ({level})"]
+            if a.get("description"):
+                parts.append(str(a["description"]))
+            if a.get("solution") and not closed:
+                parts.append(f"Що робити: {a['solution']}")
+            self._send(r.ts, "fault" if not closed else "fault_clear", "\n".join(parts))
+        self.db.set_state("seen_alerts", json.dumps(seen[-300:]))
+
     def _on_unreachable(self) -> None:
         now = self.clock()
         if not self.unreachable_alerted and now - self.last_ok >= self.cfg.unreachable_alert_after:
             self.unreachable_alerted = True
-            self._send(now, "link", f"📵 Немає зв'язку з інвертором вже "
-                                    f"{fmt_duration(now - self.last_ok)} (Wi-Fi/роутер?)")
+            hint = getattr(self.reader, "offline_hint", "Wi-Fi/роутер?")
+            self._send(now, "link", f"📵 Немає даних від інвертора вже "
+                                    f"{fmt_duration(now - self.last_ok)}\n{hint}")
 
     def _send(self, ts: float, kind: str, text: str) -> None:
         self.db.add_event(ts, kind, text)
