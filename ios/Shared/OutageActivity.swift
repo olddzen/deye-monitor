@@ -1,3 +1,4 @@
+#if os(iOS)
 import ActivityKit
 import Foundation
 
@@ -12,3 +13,4 @@ struct OutageAttributes: ActivityAttributes {
         var restoredAt: Date?    // set on the final update when power is back
     }
 }
+#endif
