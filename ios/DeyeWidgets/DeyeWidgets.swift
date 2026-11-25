@@ -137,10 +137,7 @@ struct PowerWidgetView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     status
                     Spacer(minLength: 4)
-                    if let w = entry.week {
-                        Text("7 днів: \(Fmt.number(w.offH)) год · \(w.count ?? 0) відкл.")
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
-                    }
+                    if let u = live?.updatedDate { freshness(u) }
                 }
                 VStack(alignment: .leading, spacing: 7) {
                     battery
@@ -175,10 +172,10 @@ struct PowerWidgetView: View {
                 if !entry.days7.isEmpty { weekBars }
                 HStack {
                     if let w = entry.week {
-                        Text("7 днів: \(Fmt.number(w.offH)) год без світла · \(w.count ?? 0) відкл.")
+                        Text("7 днів: \(Fmt.number(w.offH)) год без світла")
                     }
                     Spacer()
-                    if let u = live?.updatedDate { Text("дані о \(Fmt.time(u))") }
+                    if let u = live?.updatedDate { freshness(u) }
                 }
                 .font(.caption2).foregroundStyle(.secondary)
             }
@@ -271,6 +268,16 @@ struct PowerWidgetView: View {
             }
         }
         .frame(height: 62, alignment: .bottom)
+    }
+
+    /// Time of the inverter data; orange with a warning when it is older than Deye's usual cadence.
+    private func freshness(_ u: Date) -> some View {
+        let old = entry.date.timeIntervalSince(u) > Fmt.staleAfter
+        return Label("дані о \(Fmt.time(u))", systemImage: old ? "exclamationmark.triangle.fill" : "antenna.radiowaves.left.and.right")
+            .labelStyle(.titleAndIcon)
+            .font(.caption2.weight(old ? .semibold : .regular))
+            .foregroundStyle(old ? Theme.warning : .secondary)
+            .lineLimit(1)
     }
 
     private var batteryMode: String {

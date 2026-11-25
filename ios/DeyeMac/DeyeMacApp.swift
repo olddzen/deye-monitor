@@ -141,7 +141,7 @@ private struct MacPanel: View {
             if let stats {
                 TodayStripMini(outages: stats.outages ?? [])
                 HStack {
-                    Text("7 днів: \(Fmt.number(stats.week?.offH)) год без світла · \(stats.week?.count ?? 0) відкл.")
+                    Text("7 днів: \(Fmt.number(stats.week?.offH)) год без світла")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                 }

@@ -48,9 +48,11 @@ struct NowView: View {
                 .foregroundStyle(.secondary)
             Spacer()
             if let u = store.response?.live?.updatedDate {
-                Label(Fmt.time(u), systemImage: "antenna.radiowaves.left.and.right")
+                // how current the picture is matters more than anything else on this screen
+                let old = Date.now.timeIntervalSince(u) > Fmt.staleAfter
+                Label("дані о \(Fmt.time(u)) · \(Fmt.age(u))", systemImage: old ? "exclamationmark.triangle.fill" : "antenna.radiowaves.left.and.right")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(old ? Theme.warning : .secondary)
                     .labelStyle(.titleAndIcon)
             }
         }
@@ -251,10 +253,9 @@ private struct WeekGlance: View {
             }
             .glassCard(radius: 24, padding: 16)
             VStack(alignment: .leading, spacing: 6) {
-                SectionLabel(text: "Відключень")
-                Metric(value: "\(week?.count ?? 0)", unit: "", size: 26)
-                Text((week?.count ?? 0) > 0 ? "найдовше \(Fmt.number(week?.longestH)) год" : "жодного")
-                    .font(.caption).foregroundStyle(.secondary)
+                SectionLabel(text: "Найдовше")
+                Metric(value: Fmt.number(week?.longestH), unit: "год", size: 26)
+                Text("за 7 днів").font(.caption).foregroundStyle(.secondary)
             }
             .glassCard(radius: 24, padding: 16)
         }

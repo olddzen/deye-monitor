@@ -70,7 +70,7 @@ struct HistoryView: View {
             SectionLabel(text: "Останні 7 днів")
             HStack(alignment: .firstTextBaseline, spacing: 18) {
                 Metric(value: Fmt.number(w?.offH), unit: "год", size: 40)
-                Metric(value: "\(w?.count ?? 0)", unit: "відкл.", size: 40)
+                Metric(value: Fmt.number(w?.longestH), unit: "год найдовше", size: 40)
             }
             Text([delta, (w?.busy ?? []).isEmpty ? nil : "частіше о " + (w?.busy ?? []).map { "\(String(format: "%02d", $0[0]))–\(String(format: "%02d", $0[1]))" }.joined(separator: ", ")]
                 .compactMap { $0 }.joined(separator: " · "))

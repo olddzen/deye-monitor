@@ -55,6 +55,15 @@ enum Fmt {
     private static let wdm = dateFormatter("EE, d MMM")
     static func dayMonth(_ date: Date) -> String { dm.string(from: date) }
 
+    /// How old the inverter data is: "щойно", "4 хв тому", "1 год 10 хв тому".
+    static func age(_ date: Date, now: Date = .now) -> String {
+        let s = now.timeIntervalSince(date)
+        return s < 90 ? "щойно" : "\(duration(s)) тому"
+    }
+
+    /// Deye uploads about every 5 minutes; older than this means the picture may be out of date.
+    static let staleAfter: TimeInterval = 12 * 60
+
     static func number(_ x: Double?, digits: Int = 1) -> String {
         guard let x else { return "—" }
         return numbers[min(max(digits, 0), 2)]?.string(from: NSNumber(value: x)) ?? "—"
