@@ -213,12 +213,17 @@ def collect_schedule(cfg: Config, db: Storage) -> None:
     except Exception as exc:
         log.warning("schedule: %s", type(exc).__name__)
         return
+    if resp.status_code != 200:
+        log.warning("schedule: HTTP %s", resp.status_code)
+    saved = 0
     for d in ((sched or {}).get("today"), (sched or {}).get("tomorrow")):
         if not d or d.get("status") != "ScheduleApplies" or not d.get("date"):
             continue
         start = datetime.fromisoformat(d["date"]).timestamp()
         db.save_planned_day(d["date"][:10], d["status"], start,
                             [(start + a * 60, start + b * 60) for a, b in d.get("off", [])], time.time())
+        saved += 1
+    log.info("schedule: %s day(s) archived", saved)
 
 
 def collect_appliances(cfg: Config, db: Storage) -> None:
