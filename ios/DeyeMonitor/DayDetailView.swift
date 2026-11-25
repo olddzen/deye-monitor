@@ -110,10 +110,10 @@ private struct DayContent: View {
                 tile("З мережі", Fmt.number(t.importKwh), "кВт·год", t.costUah.map { "≈ \(Int($0)) ₴" })
                 tile("Без світла", (t.offMin ?? 0) > 0 ? Fmt.short((t.offMin ?? 0) * 60) : "0", "",
                      (t.outages ?? 0) > 0 ? "\(t.outages ?? 0) відкл." : "світло було весь день")
-                tile("Батарея", t.socMin.map { "\(Int($0))–\(Int(t.socMax ?? $0))" } ?? "—", "%", nil)
+                tile("Батарея", range(t.socMin, t.socMax), "%", nil)
                 tile("Пік", t.peakW.map { "\(Int($0))" } ?? "—", "Вт",
                      t.peakTs.map { "о " + Fmt.time(Date(timeIntervalSince1970: $0)) })
-                tile("Напруга", t.vMin.map { "\(Int($0))–\(Int(t.vMax ?? $0))" } ?? "—", "В", nil)
+                tile("Напруга", range(t.vMin, t.vMax), "В", nil)
             }
 
             chartCard("Потужність", legend: [("Квартира", Theme.series), ("Мережа", Theme.good)]) {
@@ -161,6 +161,12 @@ private struct DayContent: View {
             RectangleMark(xStart: .value("з", o.0), xEnd: .value("до", o.1))
                 .foregroundStyle(Theme.critical.opacity(0.12))
         }
+    }
+
+    private func range(_ lo: Double?, _ hi: Double?) -> String {
+        guard let lo else { return "—" }
+        let a = Int(lo), b = Int(hi ?? lo)
+        return a == b ? "\(a)" : "\(a)–\(b)"
     }
 
     private func tile(_ title: String, _ value: String, _ unit: String, _ note: String?) -> some View {

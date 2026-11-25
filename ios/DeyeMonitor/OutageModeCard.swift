@@ -12,8 +12,11 @@ struct OutageModeCard: View {
     private var drawW: Double { max(live.load ?? 0, math.isDischarging ? math.powerW : 0) }
     /// Fridge, router, standby — the floor the flat can get down to.
     private var economyW: Double? {
-        let base = stats?.insights?.baseLoadW ?? stats?.energy30?.baseLoadW
-        guard let base, base > 20, base < drawW * 0.9 else { return nil }
+        let measured = stats?.insights?.baseLoadW ?? stats?.energy30?.baseLoadW
+        // when the inverter reports ~0 W at night, assume the essentials: fridge + router
+        let essentials = Appliance.presets.filter { ["fridge", "router"].contains($0.id) }.reduce(0) { $0 + $1.watts }
+        let base = measured.flatMap { $0 > 20 ? $0 : nil } ?? essentials
+        guard base < drawW * 0.9 else { return nil }
         return base
     }
 

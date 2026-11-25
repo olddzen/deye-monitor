@@ -41,6 +41,22 @@ struct APIClient {
         guard code == 200 else { throw APIError.http(code) }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(T.self, from: data)
+        return try decoder.decode(T.self, from: Self.demoOff(data, path: path))
+    }
+
+    /// Launch argument `-demoOff`: pretend the grid is down (to preview the outage screens).
+    private static func demoOff(_ data: Data, path: String) -> Data {
+        guard path == "/api/data", ProcessInfo.processInfo.arguments.contains("-demoOff"),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var live = root["live"] as? [String: Any] else { return data }
+        live["gridOn"] = false
+        live["voltage"] = 0
+        live["gridPower"] = 0
+        live["load"] = 640
+        live["batteryPower"] = 660
+        live["since"] = Date.now.timeIntervalSince1970 - 2400
+        live["stale"] = false
+        root["live"] = live
+        return (try? JSONSerialization.data(withJSONObject: root)) ?? data
     }
 }
