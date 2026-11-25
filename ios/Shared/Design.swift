@@ -50,7 +50,7 @@ struct AmbientBackground: View {
         let base = scheme == .dark ? Color(hex: 0x0b0c0d) : Color(hex: 0xf5f5f2)
         ZStack {
             base
-            if #available(iOS 18.0, watchOS 11.0, *) {
+            if #available(iOS 18.0, watchOS 11.0, macOS 15.0, *) {
                 MeshGradient(
                     width: 3, height: 3,
                     points: [[0, 0], [0.5, 0], [1, 0], [0, 0.45], [0.6, 0.35], [1, 0.5], [0, 1], [0.5, 1], [1, 1]],
@@ -77,7 +77,7 @@ struct GlassCard: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         let inner = content.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
-        if #available(iOS 26.0, watchOS 26.0, *) {
+        if #available(iOS 26.0, watchOS 26.0, macOS 26.0, *) {
             inner.glassEffect(.regular, in: shape)
         } else {
             inner.background(.ultraThinMaterial, in: shape)

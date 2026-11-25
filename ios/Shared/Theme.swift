@@ -1,6 +1,8 @@
 import SwiftUI
-#if canImport(UIKit) && !os(watchOS)
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// Same palette as the web dashboard (validated data-viz palette + reserved status colours).
@@ -43,6 +45,13 @@ extension Color {
     init(light: UInt32, dark: UInt32) {
         #if os(watchOS)
         self.init(hex: dark)  // watchOS is always dark
+        #elseif os(macOS)
+        self.init(NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let v = isDark ? dark : light
+            return NSColor(srgbRed: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255,
+                           blue: CGFloat(v & 0xff) / 255, alpha: 1)
+        })
         #else
         self.init(UIColor { traits in
             let v = traits.userInterfaceStyle == .dark ? dark : light
