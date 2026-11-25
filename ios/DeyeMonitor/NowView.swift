@@ -136,7 +136,8 @@ private struct BatteryCard: View {
                     Metric(value: "\(Int(soc))", unit: "%", size: 44)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(bp < -20 ? "заряджається" : bp > 20 ? "розряджається" : "у спокої")
+                        Text(bp < -20 ? (soc >= 99 ? "повна · підтримується" : "заряджається")
+                             : bp > 20 ? "розряджається" : "у спокої")
                             .font(.subheadline.weight(.medium))
                         if abs(bp) > 20 { Text("\(Int(abs(bp))) Вт").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
                     }
@@ -171,7 +172,6 @@ private struct BatteryCard: View {
 
 private struct FlowCard: View {
     let live: Live
-    @State private var phase: CGFloat = 0
 
     var body: some View {
         let gp = live.gridPower ?? 0, load = live.load ?? 0, bp = live.batteryPower ?? 0
@@ -188,7 +188,6 @@ private struct FlowCard: View {
             }
         }
         .glassCard()
-        .onAppear { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { phase = 16 } }
     }
 
     private func node(_ symbol: String, _ value: String, _ caption: String, dim: Bool) -> some View {
@@ -205,14 +204,43 @@ private struct FlowCard: View {
     }
 
     private func link(active: Bool, reverse: Bool) -> some View {
-        Capsule()
-            .stroke(active ? AnyShapeStyle(Theme.series) : AnyShapeStyle(.primary.opacity(0.12)),
-                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: active ? [1.5, 6] : [],
-                                       dashPhase: reverse ? phase : -phase))
-            .frame(height: 2.5)
+        FlowLink(active: active, reverse: reverse)
             .frame(maxWidth: .infinity)
+            .padding(.horizontal, 4)
             .padding(.bottom, 38)
-            .drawingGroup()
+    }
+}
+
+/// A calm connector: a thin line with one soft "comet" gliding in the direction of the energy.
+private struct FlowLink: View {
+    let active: Bool
+    let reverse: Bool
+    @State private var progress: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, comet: CGFloat = 26
+            ZStack(alignment: .leading) {
+                Capsule().fill(active ? Theme.series.opacity(0.22) : Color.primary.opacity(0.08)).frame(height: 2)
+                if active {
+                    Capsule()
+                        .fill(LinearGradient(colors: [Theme.series.opacity(0), Theme.series],
+                                             startPoint: reverse ? .trailing : .leading,
+                                             endPoint: reverse ? .leading : .trailing))
+                        .frame(width: comet, height: 3)
+                        .offset(x: (reverse ? 1 - progress : progress) * (w + comet) - comet)
+                }
+            }
+            .frame(maxHeight: .infinity)
+            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.15),
+                                         .init(color: .black, location: 0.85), .init(color: .clear, location: 1)],
+                                 startPoint: .leading, endPoint: .trailing))  // soft fade at both ends
+        }
+        .frame(height: 8)
+        .onAppear {
+            progress = 0
+            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) { progress = 1 }
+        }
     }
 }
 
