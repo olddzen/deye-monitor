@@ -203,6 +203,42 @@ def publish_cache(cfg: Config, mon: Monitor) -> None:
         log.warning("cache upload failed: %s", type(exc).__name__)
 
 
+def publish_days(cfg: Config, db: Storage) -> None:
+    """Per-day point archives for the app's day picker (KV: one key per day, few writes)."""
+    import requests
+
+    from .dashboard import day_detail, days_to_publish
+    now = time.time()
+    keys = days_to_publish(db, cfg.tz, now)
+    if not keys:
+        return
+    final = [k for k in (db.get_state("days_final") or "").split(",") if k]
+    today = keys[-1] if now - float(db.get_state("day_today_at") or 0) >= 1800 else None
+    for i in range(0, len(keys), 10):  # several small requests instead of one huge body
+        chunk = keys[i:i + 10]
+        days = {}
+        for k in chunk:
+            try:
+                d = day_detail(db, k, cfg.tz, cfg.tariff_uah, cfg.grid_voltage_min, now)
+            except Exception as exc:
+                log.warning("day %s failed: %s", k, type(exc).__name__)
+                continue
+            days[k] = d  # None marks a day without data, so it isn't retried forever
+        try:
+            resp = requests.post(f"{cfg.worker_url}/cache/days", json={"days": {k: v for k, v in days.items() if v}},
+                                 headers={"X-Cache-Secret": cfg.cache_secret}, timeout=30)
+        except Exception as exc:
+            log.warning("days upload failed: %s", type(exc).__name__)
+            return
+        if resp.status_code != 200:
+            log.warning("days upload: HTTP %s", resp.status_code)
+            return
+        final += [k for k in days if k != today]
+        if today in days:
+            db.set_state("day_today_at", str(now))
+    db.set_state("days_final", ",".join(sorted(set(final))[-120:]))
+
+
 def once(cfg: Config) -> None:
     """One poll, history sync, due reports, pending bot commands; then exit. For cron / GitHub Actions."""
     db = Storage(cfg.db_path)
@@ -218,6 +254,7 @@ def once(cfg: Config) -> None:
     maintenance(cfg, db, reader, tg, mon)
     if cfg.worker_url and cfg.cache_secret:
         publish_cache(cfg, mon)
+        publish_days(cfg, db)
     if tg:
         if db.get_state("tg_commands") != tg.commands_version() and tg.sync_commands():
             db.set_state("tg_commands", tg.commands_version())

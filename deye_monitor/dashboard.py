@@ -63,6 +63,7 @@ def build_data(db: Storage, cfg, now: float) -> dict:
     prev = A.outage_stats(outs60, now - 14 * DAY, now - 7 * DAY, tz)
     pts7 = db.points_between(now - 7 * DAY, now)
     pts30 = db.points_between(now - 30 * DAY, now)
+    ins = A.consumption_insights([p for p in pts30 if p["ts"] >= now - 14 * DAY], now, tz, cfg.tariff_uah)
     per = A.battery_per_outage(db.points_between(now - 60 * DAY, now), outs60, now)
     bat = A.battery_stats(pts30, per, cfg.battery_kwh, cfg.battery_cutoff_soc)
     en = A.energy_stats(pts30, cfg.tariff_uah, tz)
@@ -104,8 +105,61 @@ def build_data(db: Storage, cfg, now: float) -> dict:
         "grid30": {"v_min": _r(gq.v_min, 0), "v_max": _r(gq.v_max, 0), "v_avg": _r(gq.v_avg, 0),
                    "low_pct": _r(gq.low_share * 100), "high_pct": _r(gq.high_share * 100),
                    "f_min": _r(gq.f_min, 2), "f_max": _r(gq.f_max, 2)},
+        "insights": {"hourly_w": ins.hourly_w, "base_load_w": _r(ins.base_load_w, 0),
+                     "week_kwh": _r(ins.week_kwh), "prev_week_kwh": _r(ins.prev_week_kwh),
+                     "import_day_kwh": _r(ins.import_day_kwh), "month_cost_uah": _r(ins.month_cost_uah, 0),
+                     "standby_month_kwh": _r(ins.standby_month_kwh, 0),
+                     "standby_month_uah": _r(ins.standby_month_uah, 0),
+                     "peak_hour": ins.peak_hour, "evening_share": _r(ins.evening_share * 100, 0)
+                     if ins.evening_share is not None else None},
         "alerts30": A.alert_counts(db.alerts_between(now - 30 * DAY, now), min_level=1),
     }
+
+
+# ---------------- one day in detail (app's day picker) ----------------
+def day_detail(db: Storage, day: str, tz: str, tariff: float, threshold: float, now: float) -> Optional[dict]:
+    """All 5-minute points of one local day plus its totals; None when the day has no data."""
+    zone = ZoneInfo(tz)
+    d0 = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=zone)
+    s, e = d0.timestamp(), min((d0 + timedelta(days=1)).timestamp(), now)
+    pts = db.points_between(s, e)
+    if not pts:
+        return None
+    outs = [(a, b) for a, b in A.clip(db.outages_between(s - DAY, e), s, e)]
+    en = A.energy_stats(pts, tariff, tz)
+    socs = [p["soc"] for p in pts if p.get("soc") is not None]
+    loads = [(p["load_power"], p["ts"]) for p in pts if p.get("load_power") is not None]
+    peak = max(loads) if loads else None
+    volts = [p["grid_voltage"] for p in pts if p.get("grid_voltage") is not None and p["grid_voltage"] >= threshold]
+    return {
+        "date": day, "start": round(s),
+        # [ts, grid_v, grid_w, load_w, soc, battery_w]
+        "points": [[p["ts"], _r(p.get("grid_voltage"), 0), _r(p.get("grid_power"), 0), _r(p.get("load_power"), 0),
+                    _r(p.get("soc"), 0), _r(p.get("battery_power"), 0)] for p in pts],
+        "outages": [[round(a), round(b)] for a, b in outs],
+        "totals": {"load_kwh": _r(en.load_kwh, 2), "import_kwh": _r(en.import_kwh, 2),
+                   "cost_uah": _r(en.cost_uah, 0), "off_min": round(sum(b - a for a, b in outs) / 60),
+                   "outages": len(outs), "soc_min": _r(min(socs), 0) if socs else None,
+                   "soc_max": _r(max(socs), 0) if socs else None,
+                   "peak_w": _r(peak[0], 0) if peak else None, "peak_ts": peak[1] if peak else None,
+                   "v_min": _r(min(volts), 0) if volts else None, "v_max": _r(max(volts), 0) if volts else None},
+    }
+
+
+def days_to_publish(db: Storage, tz: str, now: float, back: int = 60) -> List[str]:
+    """Today (at most every 30 min), plus past days not yet uploaded as final (ended > 2 h ago)."""
+    zone = ZoneInfo(tz)
+    today = datetime.fromtimestamp(now, zone).replace(hour=0, minute=0, second=0, microsecond=0)
+    final = set(filter(None, (db.get_state("days_final") or "").split(",")))
+    out = []
+    for i in range(back, 0, -1):
+        d = today - timedelta(days=i)
+        key = d.strftime("%Y-%m-%d")
+        if key not in final and now - (d + timedelta(days=1)).timestamp() > 7200:
+            out.append(key)
+    if now - float(db.get_state("day_today_at") or 0) >= 1800:
+        out.append(today.strftime("%Y-%m-%d"))
+    return out
 
 
 # ---------------- morning summary ----------------

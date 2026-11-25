@@ -255,3 +255,54 @@ def alert_counts(alerts: Iterable[Tuple[str, int, float, Optional[float]]], min_
         if (level or 0) >= min_level:
             c[str(name).split("_")[0][:3]] += 1
     return dict(c.most_common())
+
+
+@dataclass
+class Insights:
+    hourly_w: List[Optional[float]]     # average load by local hour, last 14 days
+    base_load_w: Optional[float]        # median 01–05 load (fridge, router, standby)
+    week_kwh: float
+    prev_week_kwh: Optional[float]      # None when last week has too little data
+    import_day_kwh: Optional[float]     # average grid import per full day with data
+    month_cost_uah: Optional[float]     # projected at that average
+    standby_month_kwh: Optional[float]
+    standby_month_uah: Optional[float]
+    peak_hour: Optional[int]
+    evening_share: Optional[float]      # share of consumption between 18 and 23
+
+
+def consumption_insights(pts14: Sequence[dict], now: float, tz: str, tariff: float) -> Insights:
+    """What eats the energy: hourly profile, standby, week-over-week, projected bill."""
+    zone = ZoneInfo(tz)
+    sums, counts = [0.0] * 24, [0] * 24
+    for p in pts14:
+        w = p.get("load_power")
+        if w is not None:
+            h = datetime.fromtimestamp(p["ts"], zone).hour
+            sums[h] += w
+            counts[h] += 1
+    hourly = [round(sums[h] / counts[h]) if counts[h] >= 6 else None for h in range(24)]
+    night = sorted(p["load_power"] for p in pts14 if p.get("load_power") is not None
+                   and 1 <= datetime.fromtimestamp(p["ts"], zone).hour < 5)
+    base = statistics.median(night) if night else None
+    week_pts = [p for p in pts14 if p["ts"] >= now - 7 * 86400]
+    prev_pts = [p for p in pts14 if p["ts"] < now - 7 * 86400]
+    week = integrate_kwh(week_pts, "load_power")
+    prev = integrate_kwh(prev_pts, "load_power") if len(prev_pts) > 0.6 * 7 * 288 else None
+    # average import over full local days that have most of their points
+    days: Dict[str, List[dict]] = {}
+    for p in pts14:
+        days.setdefault(datetime.fromtimestamp(p["ts"], zone).strftime("%Y-%m-%d"), []).append(p)
+    today = datetime.fromtimestamp(now, zone).strftime("%Y-%m-%d")
+    full = [integrate_kwh(v, "grid_power", +1) for k, v in days.items() if k != today and len(v) > 0.8 * 288]
+    imp_day = statistics.mean(full) if full else None
+    known = [w for w in hourly if w is not None]
+    total = sum(known)
+    evening = sum(w for h, w in enumerate(hourly) if w is not None and 18 <= h < 23)
+    standby_kwh = base * 24 * 30 / 1000 if base else None
+    return Insights(
+        hourly_w=hourly, base_load_w=base, week_kwh=week, prev_week_kwh=prev, import_day_kwh=imp_day,
+        month_cost_uah=imp_day * 30 * tariff if imp_day is not None else None,
+        standby_month_kwh=standby_kwh, standby_month_uah=standby_kwh * tariff if standby_kwh else None,
+        peak_hour=max(range(24), key=lambda h: hourly[h] or 0) if known else None,
+        evening_share=evening / total if total else None)

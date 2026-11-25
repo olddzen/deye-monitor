@@ -14,6 +14,9 @@ struct NowView: View {
                 if let live {
                     Hero(live: live, stats: stats, state: state)
                         .padding(.vertical, 18)
+                    if state == .off, live.soc != nil {
+                        OutageModeCard(live: live, stats: stats)
+                    }
                     BatteryCard(live: live, stats: stats, state: state)
                     CalculatorCard(live: live, stats: stats)
                     FlowCard(live: live)

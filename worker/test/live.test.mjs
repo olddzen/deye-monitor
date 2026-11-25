@@ -53,6 +53,26 @@ assert.match(sent.at(-1), /знову надходять/);
 
 await run(5); assert.equal(dispatched, 1);        // every 5th minute starts the workflow
 
+// smart alerts: runtime on outage, last hour, full again, voltage band
+await tick({ v: 0, soc: 90, bp: 300 });
+assert.match(sent.at(-1), /вимкнули[\s\S]*Вистачить ≈ .* \(до ~/);
+await tick({ v: 0, soc: 12, bp: 3000 });
+assert.ok(sent.some((m) => m.includes("Батареї залишилось")));
+const lastHour = sent.filter((m) => m.includes("залишилось")).length;
+await tick({ v: 0, soc: 11, bp: 3000 });
+assert.equal(sent.filter((m) => m.includes("залишилось")).length, lastHour);   // once per outage
+await tick({ v: 231, soc: 50, bp: -2000 });
+assert.match(sent.at(-1), /Світло дали/);
+await tick({ v: 231, soc: 100, bp: 0 });
+assert.match(sent.at(-1), /знову повна/);
+await tick({ v: 262, soc: 100 });
+assert.match(sent.at(-1), /Напруга в мережі 262 В/);
+const n = sent.length;
+await tick({ v: 258 }); assert.equal(sent.length, n);                          // no repeat
+await tick({ v: 230 }); await tick({ v: 195 });
+assert.match(sent.at(-1), /занижена/);
+await tick({ v: 230 });
+
 // cached reports answer instantly
 const req = (path, body, headers) => new Request("https://w" + path, { method: "POST", body, headers });
 let r = await worker.fetch(req("/cache", "{}", { "X-Cache-Secret": "nope" }), env, { waitUntil() {} });

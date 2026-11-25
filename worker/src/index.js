@@ -20,6 +20,9 @@ const REPORT_COMMANDS = {
 const COMMANDS = { status: "Чи є світло зараз, заряд батареї (миттєво)",
                    dashboard: "Дашборд: графіки, батарея, відключення", ...REPORT_COMMANDS };
 const SOC_ALERTS = [30, 15];
+const BATTERY_WH = 11800, CUTOFF_SOC = 10;
+const V_HIGH = 250, V_LOW = 200, V_OK = [205, 245];  // grid voltage alert band with hysteresis
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const CACHE_MAX_AGE_MIN = 30;
 const FAULT_HINTS = {
   F13: "змінився режим роботи (мережа/батарея)",
@@ -52,6 +55,20 @@ export default {
       await env.KV.put("reports", body);
       return new Response("stored");
     }
+    if (request.method === "POST" && url.pathname === "/cache/days") {
+      // per-day point archives for the app's day picker
+      if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {
+        return new Response("forbidden", { status: 403 });
+      }
+      const body = await request.json().catch(() => null);
+      const days = (body && body.days) || {};
+      const keys = Object.keys(days).filter((k) => DAY_RE.test(k)).slice(0, 20);
+      for (const k of keys) {
+        await env.KV.put(`day:${k}`, JSON.stringify(days[k]), { expirationTtl: 400 * 86400 });
+      }
+      return new Response("stored");
+    }
+    if (request.method === "GET" && url.pathname === "/api/day") return dayData(request, env, url);
     if (request.method === "GET" && (url.pathname === "/app" || url.pathname === "/app/")) {
       return new Response(APP_HTML, { headers: { "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" } });
@@ -176,10 +193,14 @@ async function liveCheck(env) {
       await sendMessage(env, `💡 <b>Світло дали</b> о ${clock(updated)}` +
         (was ? `\nНе було: <b>${was}</b>` : "") + `\n🔋 Батарея: ${socText}`);
     } else {
+      const load = num("TotalConsumptionPower");
+      const h = runtimeHours(soc, load);
       await sendMessage(env, `🔌 <b>Світло вимкнули</b> о ${clock(updated)}` + (was ? `\nБуло: ${was}` : "") +
-        `\n🔋 Батарея: ${socText} · навантаження ${num("TotalConsumptionPower") ?? "?"} Вт`);
+        `\n🔋 Батарея: ${socText} · навантаження ${load ?? "?"} Вт` +
+        (h !== null ? `\n⏳ Вистачить ≈ ${duration(h * 3600)} (до ~${clock(updated + h * 3600)})` : ""));
     }
-    Object.assign(state, { gridOn, since: updated, socFired: [] });
+    Object.assign(state, { gridOn, since: updated, socFired: [], etaFired: false,
+                           fullArmed: gridOn && soc !== null && soc < 95, fullFrom: gridOn ? updated : null });
     await save();
   }
 
@@ -188,17 +209,53 @@ async function liveCheck(env) {
     const crossed = SOC_ALERTS.filter((l) => soc <= l && !fired.includes(l));
     if (crossed.length) {
       const lowest = Math.min(...crossed);
-      const bp = num("BatteryPower") || 0;
-      const hours = bp > 50 ? ((soc - 10) / 100) * 11800 / bp : 0;
+      const hours = runtimeHours(soc, num("BatteryPower"));
       await sendMessage(env, `🪫 Батарея ${soc}% (поріг ${lowest}%)` +
-        (hours > 0 ? `\nВистачить приблизно на ${duration(hours * 3600)}` : ""));
+        (hours !== null ? `\nВистачить приблизно на ${duration(hours * 3600)} (до ~${clock(updated + hours * 3600)})` : ""));
       state.socFired = fired.concat(SOC_ALERTS.filter((x) => x >= lowest && !fired.includes(x)));
       await save();
     }
   }
 
+  // last hour of battery during an outage: one heads-up with what to switch off
+  if (!gridOn && soc !== null && !state.etaFired) {
+    const load = num("TotalConsumptionPower");
+    const h = runtimeHours(soc, num("BatteryPower") > 50 ? num("BatteryPower") : load);
+    if (h !== null && h <= 1) {
+      state.etaFired = true;
+      await save();
+      await sendMessage(env, `⏰ <b>Батареї залишилось ≈ ${duration(h * 3600)}</b> (до ~${clock(updated + h * 3600)})\n` +
+        `Зараз ${soc}% · ${load ?? "?"} Вт. Вимкніть потужні прилади (бойлер, обігрівач, духовку), щоб протриматись довше.`);
+    }
+  }
+
+  // charged back to full after an outage
+  if (gridOn && soc !== null && state.fullArmed && soc >= 100) {
+    state.fullArmed = false;
+    await save();
+    await sendMessage(env, `🔋 Батарея знову повна` +
+      (state.fullFrom ? ` — зарядилась за ${duration(updated - state.fullFrom)} після появи світла` : ""));
+  }
+
+  // grid voltage out of the safe band (only while the grid is on)
+  if (gridOn && !state.vBad && (voltage > V_HIGH || voltage < V_LOW)) {
+    state.vBad = true;
+    await save();
+    await sendMessage(env, `⚡️ <b>Напруга в мережі ${Math.round(voltage)} В</b> — ${voltage > V_HIGH ? "завищена" : "занижена"}\n` +
+      "Норма 207–253 В. Інвертор може перейти на батарею; чутливу техніку краще не вмикати.");
+  } else if (state.vBad && gridOn && voltage >= V_OK[0] && voltage <= V_OK[1]) {
+    state.vBad = false;
+    await save();
+  }
+
   // serious Deye alerts, checked every 5 minutes
   if (new Date().getUTCMinutes() % 5 === 0) await checkDeyeAlerts(env, sn, nowSec);
+}
+
+/** Hours until the cut-off at a given draw in watts, or null when unknown / not discharging. */
+function runtimeHours(soc, watts) {
+  if (soc === null || soc === undefined || !(watts > 50)) return null;
+  return Math.max(0, ((soc - CUTOFF_SOC) / 100) * BATTERY_WH / watts);
 }
 
 async function checkDeyeAlerts(env, sn, nowSec) {
@@ -421,6 +478,17 @@ async function dashboardData(request, env) {
   return new Response(JSON.stringify({ live, data: cache && cache.data, generated_at: cache && cache.generated_at }), {
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
+}
+
+async function dayData(request, env, url) {
+  if (!appTokenOk(request, env) && !(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
+    return new Response("forbidden", { status: 403 });
+  }
+  const day = url.searchParams.get("date") || "";
+  if (!DAY_RE.test(day)) return new Response("bad date", { status: 400 });
+  const body = await env.KV.get(`day:${day}`);
+  if (!body) return new Response("no data", { status: 404 });
+  return new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "private, max-age=300" } });
 }
 
 // ---------------------------------------------------------------- formatting

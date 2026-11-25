@@ -155,4 +155,63 @@ struct Stats: Decodable {
     let energy30: EnergyStats?
     let grid30: GridStats?
     let alerts30: [String: Int]?
+    let insights: Insights?
+}
+
+/// What eats the energy (last 14 days).
+struct Insights: Decodable {
+    let hourlyW: [Double?]?
+    let baseLoadW: Double?
+    let weekKwh: Double?
+    let prevWeekKwh: Double?
+    let importDayKwh: Double?
+    let monthCostUah: Double?
+    let standbyMonthKwh: Double?
+    let standbyMonthUah: Double?
+    let peakHour: Int?
+    let eveningShare: Double?
+}
+
+/// GET /api/day?date=YYYY-MM-DD — one local day in 5-minute points.
+struct DayDetail: Decodable {
+    let date: String
+    let start: Double
+    let points: [DayPoint]
+    let outages: [[Double]]
+    let totals: DayTotals
+}
+
+struct DayPoint: Decodable, Identifiable {
+    let ts: Double
+    let voltage: Double?
+    let gridW: Double?
+    let loadW: Double?
+    let soc: Double?
+    let batteryW: Double?
+    var id: Double { ts }
+    var date: Date { Date(timeIntervalSince1970: ts) }
+
+    init(from decoder: Decoder) throws {  // [ts, grid_v, grid_w, load_w, soc, battery_w]
+        var c = try decoder.unkeyedContainer()
+        ts = try c.decode(Double.self)
+        voltage = try c.decodeIfPresent(Double.self)
+        gridW = try c.decodeIfPresent(Double.self)
+        loadW = try c.decodeIfPresent(Double.self)
+        soc = try c.decodeIfPresent(Double.self)
+        batteryW = try c.decodeIfPresent(Double.self)
+    }
+}
+
+struct DayTotals: Decodable {
+    let loadKwh: Double?
+    let importKwh: Double?
+    let costUah: Double?
+    let offMin: Double?
+    let outages: Int?
+    let socMin: Double?
+    let socMax: Double?
+    let peakW: Double?
+    let peakTs: Double?
+    let vMin: Double?
+    let vMax: Double?
 }
