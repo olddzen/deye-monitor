@@ -125,6 +125,14 @@ private struct MacPanel: View {
             }
             .glassCard(radius: 18, padding: 12)
 
+            if let sched = store.response?.schedule {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar.badge.clock").foregroundStyle(.secondary)
+                    Text(scheduleLine(sched)).font(.caption).monospacedDigit()
+                    Spacer()
+                }
+            }
+
             if let stats {
                 TodayStripMini(outages: stats.outages ?? [])
                 HStack {
@@ -152,6 +160,17 @@ private struct MacPanel: View {
         .padding(16)
         .frame(width: 320)
         .background(AmbientBackground(state: state))
+    }
+
+    private func scheduleLine(_ s: Schedule) -> String {
+        func slots(_ d: ScheduleDay?) -> String? {
+            guard let d else { return nil }
+            guard d.applies else { return d.statusText }
+            let list = d.intervals.filter { $0.end > .now }
+            return list.isEmpty ? "без відключень" : list.map { "\(Fmt.time($0.start))–\(Fmt.time($0.end))" }.joined(separator: ", ")
+        }
+        return "Графік \(s.group): " + [slots(s.today).map { "сьогодні \($0)" }, slots(s.tomorrow).map { "завтра \($0)" }]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     private func batteryLine(_ m: BatteryMath, live: Live?) -> String {

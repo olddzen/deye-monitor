@@ -5,6 +5,46 @@ struct DashboardResponse: Decodable {
     let live: Live?
     let data: Stats?
     let generatedAt: Double?
+    let schedule: Schedule?
+}
+
+/// Planned outages for our YASNO group (today / tomorrow), minutes from local midnight.
+struct Schedule: Decodable {
+    let group: String
+    let updatedOn: String?
+    let today: ScheduleDay?
+    let tomorrow: ScheduleDay?
+}
+
+struct ScheduleDay: Decodable {
+    let date: String
+    let status: String
+    let off: [[Double]]
+
+    var applies: Bool { status == "ScheduleApplies" }
+    var statusText: String {
+        switch status {
+        case "ScheduleApplies": return "діє графік"
+        case "WaitingForSchedule": return "графік ще не опубліковано"
+        case "EmergencyShutdowns": return "екстрені відключення"
+        default: return status
+        }
+    }
+    /// Local midnight of this day (the API sends an ISO date with the Kyiv offset).
+    var start: Date? { ScheduleDay.iso.date(from: date) }
+    /// Planned outages as absolute intervals.
+    var intervals: [DateInterval] {
+        guard let start else { return [] }
+        return off.compactMap { o in
+            o.count == 2 && o[1] > o[0] ? DateInterval(start: start.addingTimeInterval(o[0] * 60),
+                                                         end: start.addingTimeInterval(o[1] * 60)) : nil
+        }
+    }
+    private static let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 }
 
 struct Live: Decodable {

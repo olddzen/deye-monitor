@@ -23,6 +23,11 @@ const SOC_ALERTS = [30, 15];
 const BATTERY_WH = 11800, CUTOFF_SOC = 10;
 const V_HIGH = 250, V_LOW = 200, V_OK = [205, 245];  // grid voltage alert band with hysteresis
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Planned outage schedule (YASNO / DTEK Kyiv). The group is a secret: YASNO_GROUP, e.g. "12.1".
+const YASNO_URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns";
+const SCHEDULE_REMIND_MIN = 30;
+const SCHEDULE_STATUS = { ScheduleApplies: "діє графік", WaitingForSchedule: "графік ще не опубліковано",
+                          EmergencyShutdowns: "екстрені відключення (графік не діє)" };
 const CACHE_MAX_AGE_MIN = 30;
 const FAULT_HINTS = {
   F13: "змінився режим роботи (мережа/батарея)",
@@ -168,7 +173,7 @@ async function liveCheck(env) {
     return sendMessage(env, `📵 Deye не отримує даних ${updated ? duration(nowSec - updated) : ""}\n` +
       "Найімовірніше, у квартирі немає світла і разом з ним інтернету, або стік втратив Wi-Fi.");
   }
-  if (stale) return;
+  if (stale) return scheduleAlerts(env, state, save, { nowSec, soc: null, load: null });
   if (state.stale) {
     state.stale = false;
     await save();
@@ -247,6 +252,8 @@ async function liveCheck(env) {
     state.vBad = false;
     await save();
   }
+
+  await scheduleAlerts(env, state, save, { nowSec, soc, load: num("TotalConsumptionPower") });
 
   // serious Deye alerts, checked every 5 minutes
   if (new Date().getUTCMinutes() % 5 === 0) await checkDeyeAlerts(env, sn, nowSec);
@@ -340,6 +347,76 @@ async function deye(env, path, body, retry = true) {
   return data;
 }
 
+// ---------------------------------------------------------------- planned schedule (YASNO)
+/** Today's / tomorrow's planned outages for our group: {group, updatedOn, today, tomorrow}, each day
+ *  {date, status, off: [[startMin, endMin], ...]} with adjacent slots merged. Cached 5 min at the edge. */
+async function schedule(env) {
+  if (!env.YASNO_GROUP) return null;
+  const region = env.YASNO_REGION || "25", dso = env.YASNO_DSO || "902";
+  const resp = await fetch(`${YASNO_URL}/regions/${region}/dsos/${dso}/planned-outages`,
+                           { cf: { cacheTtl: 300, cacheEverything: true } });
+  if (!resp.ok) throw new Error(`YASNO HTTP ${resp.status}`);
+  const g = (await resp.json())[env.YASNO_GROUP];
+  if (!g) return null;
+  const day = (d) => {
+    if (!d) return null;
+    const off = [];
+    for (const sl of d.slots || []) {
+      if (sl.type !== "Definite") continue;
+      const last = off[off.length - 1];
+      if (last && last[1] === sl.start) last[1] = sl.end; else off.push([sl.start, sl.end]);
+    }
+    return { date: d.date, status: d.status, off };
+  };
+  return { group: env.YASNO_GROUP, updatedOn: g.updatedOn || null, today: day(g.today), tomorrow: day(g.tomorrow) };
+}
+
+const hhmm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const slotText = ([s, e]) => `${hhmm(s)}–${e >= 1440 ? "24:00" : hhmm(e)}`;
+
+/** Telegram: tomorrow's schedule published / today's changed, and a heads-up before a planned outage. */
+async function scheduleAlerts(env, state, save, ctx) {
+  const sched = await schedule(env).catch(() => null);
+  if (!sched) return;
+  const { nowSec, soc, load } = ctx;
+  const g = esc(sched.group);
+  for (const [which, d] of [["today", sched.today], ["tomorrow", sched.tomorrow]]) {
+    if (!d || d.status !== "ScheduleApplies") continue;
+    const key = `${d.date}|${JSON.stringify(d.off)}`;
+    const stateKey = which === "today" ? "schedToday" : "schedTomorrow";
+    if (state[stateKey] === key) continue;
+    const prev = state[stateKey];
+    // tomorrow becomes today at midnight: don't announce the same schedule twice
+    const known = which === "today" && state.schedTomorrow === key;
+    state[stateKey] = key;
+    await save();
+    if (known || prev === undefined && which === "today") continue;
+    const changed = prev && prev.split("|")[0] === d.date;
+    const label = which === "today" ? "сьогодні" : "завтра";
+    await sendMessage(env, `📅 <b>${changed ? `Графік на ${label} змінився` : `Графік на ${label}`}</b> (група ${g})\n` +
+      (d.off.length ? d.off.map(slotText).join(", ") : "Відключень не заплановано ✨"));
+  }
+  const t = sched.today;
+  if (!t || t.status !== "ScheduleApplies") return;
+  const nowMin = (nowSec * 1000 - Date.parse(t.date)) / 60000;
+  const next = t.off.find(([s]) => s - nowMin > 0 && s - nowMin <= SCHEDULE_REMIND_MIN);
+  const remindKey = next && `${t.date}|${next[0]}`;
+  if (next && state.schedReminded !== remindKey) {
+    state.schedReminded = remindKey;
+    await save();
+    const outageH = (next[1] - next[0]) / 60;
+    const h = runtimeHours(soc, load);
+    let battery = "";
+    if (soc !== null) {
+      battery = `\n🔋 Батарея ${soc}%` + (h === null ? "" : h >= outageH
+        ? ` — при ${load} Вт вистачить на ${duration(h * 3600)}, з запасом`
+        : ` — при ${load} Вт вистачить лише на ${duration(h * 3600)}, менше за відключення`);
+    }
+    await sendMessage(env, `⏰ <b>О ${hhmm(next[0])} відключення за графіком</b> до ${next[1] >= 1440 ? "24:00" : hhmm(next[1])}` +
+      ` (${duration(outageH * 3600)})${battery}`);
+  }
+}
+
 // Live snapshot shared by /status and the dashboard.
 async function liveData(env) {
   const sn = env.DEYE_CLOUD_DEVICE_SN;
@@ -400,8 +477,18 @@ async function liveData(env) {
   };
 }
 
+function scheduleLine(sched, nowSec) {
+  if (!sched || !sched.today) return null;
+  const t = sched.today;
+  if (t.status !== "ScheduleApplies") return `📅 Група ${esc(sched.group)}: ${SCHEDULE_STATUS[t.status] || esc(t.status)}`;
+  const nowMin = (nowSec * 1000 - Date.parse(t.date)) / 60000;
+  const left = t.off.filter(([, e]) => e > nowMin);
+  return `📅 За графіком (група ${esc(sched.group)}): ` +
+    (left.length ? left.map(slotText).join(", ") : "сьогодні більше відключень немає");
+}
+
 async function statusText(env) {
-  const d = await liveData(env);
+  const [d, sched] = await Promise.all([liveData(env), schedule(env).catch(() => null)]);
   const lines = [];
   const holds = d.since ? ` вже ${duration(d.now - d.since)}` : d.beyondDay ? " понад добу" : "";
   lines.push(d.gridOn ? `<b>💡 Світло є${holds}</b>` : `<b>🔌 Світла немає${holds}</b>`);
@@ -422,6 +509,8 @@ async function statusText(env) {
   if (d.batteryTemp !== null) temps.push(`батарея ${Math.round(d.batteryTemp)} °C`);
   if (d.inverterTemp !== null) temps.push(`інвертор ${Math.round(d.inverterTemp)} °C`);
   if (temps.length) lines.push(`🌡 ${temps.join(", ")}`);
+  const sl = scheduleLine(sched, d.now);
+  if (sl) lines.push(sl);
   if (d.updated) {
     const ageMin = (d.now - d.updated) / 60;
     lines.push(d.stale
@@ -471,11 +560,13 @@ async function dashboardData(request, env) {
   if (!appTokenOk(request, env) && !(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
     return new Response("forbidden", { status: 403 });
   }
-  const [live, cache] = await Promise.all([
+  const [live, cache, sched] = await Promise.all([
     liveData(env).catch((e) => ({ error: String(e.message || e.name) })),
     env.KV.get("reports", "json").catch(() => null),
+    schedule(env).catch(() => null),
   ]);
-  return new Response(JSON.stringify({ live, data: cache && cache.data, generated_at: cache && cache.generated_at }), {
+  return new Response(JSON.stringify({ live, data: cache && cache.data, generated_at: cache && cache.generated_at,
+                                       schedule: sched }), {
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }

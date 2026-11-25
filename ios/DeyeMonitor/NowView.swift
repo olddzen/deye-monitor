@@ -17,9 +17,12 @@ struct NowView: View {
                     if state == .off, live.soc != nil {
                         OutageModeCard(live: live, stats: stats)
                     }
+                    if let schedule = store.response?.schedule {
+                        ScheduleCard(schedule: schedule, live: live, stats: stats)
+                    }
                     BatteryCard(live: live, stats: stats, state: state)
+                    PowerFlowCard(live: live)
                     CalculatorCard(live: live, stats: stats)
-                    FlowCard(live: live)
                 } else if let error = store.error {
                     Text(error).foregroundStyle(.secondary).glassCard()
                 } else {

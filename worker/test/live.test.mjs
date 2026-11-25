@@ -7,6 +7,7 @@ const KV = {
   async get(k, type) { const v = kv.get(k); return v === undefined ? null : type === "json" ? JSON.parse(v) : v; },
   async put(k, v) { kv.set(k, v); }, async delete(k) { kv.delete(k); },
 };
+let yasno = {};
 let deyeNow = { v: 230, soc: 90, t: 0, temp: 22, bp: 300 }, alerts = [], sent = [], photos = 0, dispatched = 0;
 globalThis.fetch = async (url, init = {}) => {
   url = String(url);
@@ -16,6 +17,7 @@ globalThis.fetch = async (url, init = {}) => {
     dataList: [{ key: "GridVoltageL1L2", value: String(deyeNow.v) }, { key: "SOC", value: String(deyeNow.soc) },
                { key: "Temperature- Battery", value: String(deyeNow.temp) }, { key: "BatteryPower", value: String(deyeNow.bp) },
                { key: "TotalConsumptionPower", value: "300" }] }] });
+  if (url.includes("app.yasno.ua")) return json(yasno);
   if (url.includes("/device/alertList")) return json({ success: true, alertList: alerts });
   if (url.includes("/sendMessage")) { sent.push(JSON.parse(init.body).text); return json({ ok: true }); }
   if (url.includes("/sendPhoto")) { photos++; return json({ ok: true }); }
@@ -87,4 +89,46 @@ await worker.fetch(req("/telegram", JSON.stringify({ message: { chat: { id: 1 },
 await Promise.all(tasks);
 assert.equal(photos, 1); assert.match(sent.at(-1), /тиждень[\s\S]*дані на/);
 assert.equal(dispatched, 1);                      // served from cache, no workflow run
+// planned schedule (YASNO): published, changed, 30-min heads-up, /status line
+env.YASNO_GROUP = "9.1";
+const midnight = (() => { const d = new Date(); d.setUTCHours(0, 0, 0, 0); return d; })();
+const iso = (d) => d.toISOString().replace(".000Z", "+00:00");
+const nowMin = Math.floor((Date.now() - midnight.getTime()) / 60000);
+const day = (date, slots, status = "ScheduleApplies") => ({ date: iso(date), status, slots });
+const tomorrowDate = new Date(midnight.getTime() + 86400000);
+yasno = { "9.1": { today: day(midnight, [{ start: 0, end: 1440, type: "NotPlanned" }]),
+                   tomorrow: day(tomorrowDate, [], "WaitingForSchedule") } };
+const m0 = sent.length;
+await tick({ v: 230 });
+assert.equal(sent.length, m0);                                                 // first sight of today: silent
+yasno["9.1"].tomorrow = day(tomorrowDate, [{ start: 480, end: 600, type: "Definite" }, { start: 600, end: 690, type: "Definite" }]);
+await tick({ v: 230 });
+assert.match(sent.at(-1), /Графік на завтра[\s\S]*08:00–11:30/);              // adjacent slots merged
+await tick({ v: 230 }); assert.equal(sent.filter((m) => m.includes("Графік на завтра")).length, 1);
+if (nowMin + 20 < 1440) {
+  yasno["9.1"].today = day(midnight, [{ start: nowMin + 20, end: Math.min(nowMin + 140, 1440), type: "Definite" }]);
+  await tick({ v: 230, soc: 100, bp: 0 });
+  assert.ok(sent.some((m) => /Графік на сьогодні змінився/.test(m)));
+  assert.ok(sent.some((m) => /відключення за графіком[\s\S]*Батарея 100%[\s\S]*з запасом/.test(m)));
+  const k = sent.length; await tick({ v: 230, soc: 100 }); assert.equal(sent.length, k);   // once
+  const statusTasks = [];
+  await worker.fetch(req("/telegram", JSON.stringify({ message: { chat: { id: 1 }, text: "/status" } }),
+    { "X-Telegram-Bot-Api-Secret-Token": "w" }), env, { waitUntil: (p) => statusTasks.push(p) });
+  await Promise.all(statusTasks);
+  assert.match(sent.at(-1), /За графіком \(група 9\.1\)/);
+}
+
+// day archives for the app's day picker
+env.APP_TOKEN = "a";
+r = await worker.fetch(req("/cache/days", JSON.stringify({ days: { "2026-11-20": { date: "2026-11-20", points: [] },
+  "../x": {} } }), { "X-Cache-Secret": "c" }), env, { waitUntil() {} });
+assert.equal(r.status, 200); assert.ok(kv.has("day:2026-11-20")); assert.ok(!kv.has("day:../x"));
+const get = (path, auth) => worker.fetch(new Request("https://w" + path, { headers: auth ? { Authorization: auth } : {} }),
+                                        env, { waitUntil() {} });
+assert.equal((await get("/api/day?date=2026-11-20")).status, 403);
+assert.equal((await get("/api/day?date=2026-11-20", "Bearer a")).status, 200);
+assert.equal((await get("/api/day?date=2026-11-21", "Bearer a")).status, 404);
+assert.equal((await get("/api/day?date=x", "Bearer a")).status, 400);
+const dash = await (await get("/api/data", "Bearer a")).json();
+assert.deepEqual(dash.schedule.today.off.length, nowMin + 20 < 1440 ? 1 : 0);
 console.log("worker tests passed:", sent.length, "messages");
