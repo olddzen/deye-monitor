@@ -31,8 +31,9 @@ struct OutageModeCard: View {
             if let h = math.hours(atLoad: drawW) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("вистачить до").font(.subheadline).foregroundStyle(.secondary)
-                    Text(Fmt.time(now.addingTimeInterval(h * 3600)))
-                        .font(.display(52, .bold)).monospacedDigit()
+                    Text(Fmt.until(now.addingTimeInterval(h * 3600), now: now))
+                        .font(.display(h < 24 ? 52 : 34, .bold)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.6)
                         .contentTransition(.numericText())
                     Text("ще ≈ \(Fmt.duration(h * 3600)) при \(Int(drawW)) Вт · до \(Int(minSoc))%")
                         .font(.subheadline).foregroundStyle(.secondary)
@@ -79,7 +80,7 @@ struct OutageModeCard: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text("до \(Fmt.time(now.addingTimeInterval(hours * 3600)))").font(.subheadline.weight(.semibold)).monospacedDigit()
+                Text("до \(Fmt.until(now.addingTimeInterval(hours * 3600), now: now))").font(.subheadline.weight(.semibold)).monospacedDigit()
                 Text("\(gain >= 0 ? "+" : "−")\(Fmt.short(abs(gain) * 3600))").font(.caption).monospacedDigit()
                     .foregroundStyle(gain >= 0 ? Theme.good : Theme.warning)
             }

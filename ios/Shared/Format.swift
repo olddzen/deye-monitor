@@ -44,6 +44,15 @@ enum Fmt {
     })
 
     static func time(_ date: Date) -> String { hm.string(from: date) }
+
+    /// "21:40" today, "завтра 03:10", or "пн, 1 груд. 14:41" further away.
+    static func until(_ date: Date, now: Date = .now) -> String {
+        let cal = kyivCalendar
+        if cal.isDate(date, inSameDayAs: now) { return time(date) }
+        if let t = cal.date(byAdding: .day, value: 1, to: now), cal.isDate(date, inSameDayAs: t) { return "завтра \(time(date))" }
+        return wdm.string(from: date) + " " + time(date)
+    }
+    private static let wdm = dateFormatter("EE, d MMM")
     static func dayMonth(_ date: Date) -> String { dm.string(from: date) }
 
     static func number(_ x: Double?, digits: Int = 1) -> String {

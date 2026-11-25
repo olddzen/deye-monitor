@@ -12,7 +12,7 @@ struct NowView: View {
             VStack(alignment: .leading, spacing: 14) {
                 header
                 if let live {
-                    Hero(live: live, stats: stats, state: state)
+                    Hero(live: live, stats: stats, state: state, schedule: store.response?.schedule)
                         .padding(.vertical, 18)
                     if state == .off, live.soc != nil {
                         OutageModeCard(live: live, stats: stats)
@@ -63,6 +63,7 @@ private struct Hero: View {
     let live: Live
     let stats: Stats?
     let state: PowerState
+    let schedule: Schedule?
 
     private var since: Date? {
         if let s = live.sinceDate { return s }
@@ -82,7 +83,19 @@ private struct Hero: View {
                 Text(state.title)
                     .font(.display(22))
             }
-            if state == .unknown, let u = live.updatedDate {
+            if state == .off, let end = schedule?.plannedEnd(since: since), end > .now {
+                // planned outage: count down to the scheduled switch-on
+                Text(timerInterval: Date.now...end, countsDown: true, showsHours: true)
+                    .font(.display(64, .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                Text("за графіком увімкнуть о \(Fmt.time(end))").font(.headline)
+                if let since {
+                    (Text("вимкнули о \(Fmt.time(since)) · без світла ") + Text(timerInterval: since...Date.distantFuture, countsDown: false))
+                        .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
+                }
+            } else if state == .unknown, let u = live.updatedDate {
                 Text("останні дані о \(Fmt.time(u))").font(.display(40)).monospacedDigit()
                 Text("Схоже, у квартирі немає світла й інтернету").font(.subheadline).foregroundStyle(.secondary)
             } else if let since {
@@ -96,6 +109,10 @@ private struct Hero: View {
                      + (live.voltage.map { state == .on ? " · \(Int($0)) В" : "" } ?? ""))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                if state == .off, let end = schedule?.plannedEnd(since: since), end <= .now {
+                    Text("за графіком мали увімкнути о \(Fmt.time(end)) — запізнюються на \(Fmt.duration(Date.now.timeIntervalSince(end)))")
+                        .font(.subheadline).foregroundStyle(Theme.warning)
+                }
             } else if live.beyondDay == true {
                 Text("понад добу").font(.display(44))
             }

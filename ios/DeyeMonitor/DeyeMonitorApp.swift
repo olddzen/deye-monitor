@@ -29,7 +29,7 @@ final class Store: ObservableObject {
             }
             response = r
             error = nil
-            LiveActivityManager.sync(with: r.live)
+            LiveActivityManager.sync(with: r.live, schedule: r.schedule)
             let grid = r.live?.gridOn
             if grid != lastGridOn || Date.now.timeIntervalSince(lastWidgetReload) > 600 {
                 WidgetCenter.shared.reloadAllTimelines()

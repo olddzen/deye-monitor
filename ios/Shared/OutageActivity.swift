@@ -11,6 +11,7 @@ struct OutageAttributes: ActivityAttributes {
         var emptyAt: Date?       // estimated time the battery reaches the cut-off
         var load: Double?        // apartment load, W
         var restoredAt: Date?    // set on the final update when power is back
+        var plannedEnd: Date?    // scheduled switch-on (YASNO), if this outage is a planned one
     }
 }
 #endif

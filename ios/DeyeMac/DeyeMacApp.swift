@@ -84,7 +84,12 @@ private struct MacPanel: View {
                     Text(Fmt.time(u)).font(.caption).foregroundStyle(.secondary).help("час останніх даних Deye")
                 }
             }
-            if let since = live?.sinceDate, state != .unknown {
+            if state == .off, let end = store.response?.schedule?.plannedEnd(since: live?.sinceDate), end > .now {
+                Text(timerInterval: Date.now...end, countsDown: true)
+                    .font(.display(40)).monospacedDigit()
+                Text("за графіком увімкнуть о \(Fmt.time(end))" + (live?.sinceDate.map { " · вимкнули о \(Fmt.time($0))" } ?? ""))
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let since = live?.sinceDate, state != .unknown {
                 Text(timerInterval: since...Date.distantFuture, countsDown: false)
                     .font(.display(40)).monospacedDigit()
                 Text("\(state == .on ? "з" : "вимкнули о") \(Fmt.time(since))"

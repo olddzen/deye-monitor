@@ -28,6 +28,13 @@ struct OutageLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.center) {
                     if let r = s.restoredAt {
                         Text("не було \(Fmt.duration(r.timeIntervalSince(s.since)))").font(.title3.weight(.semibold))
+                    } else if let end = s.plannedEnd, end > .now {
+                        VStack(spacing: 0) {
+                            Text(timerInterval: Date.now...end, countsDown: true)
+                                .font(.system(size: 34, weight: .semibold, design: .rounded)).monospacedDigit()
+                                .multilineTextAlignment(.center)
+                            Text("увімкнуть о \(Fmt.time(end))").font(.caption2).foregroundStyle(.secondary)
+                        }
                     } else {
                         Text(timerInterval: s.since...Date.distantFuture, countsDown: false)
                             .font(.system(size: 34, weight: .semibold, design: .rounded)).monospacedDigit()
@@ -53,6 +60,9 @@ struct OutageLiveActivity: Widget {
             } compactTrailing: {
                 if restored {
                     Text("є").foregroundStyle(green)
+                } else if let end = s.plannedEnd, end > .now {
+                    Text(timerInterval: Date.now...end, countsDown: true)
+                        .monospacedDigit().frame(maxWidth: 56).foregroundStyle(red)
                 } else {
                     Text(timerInterval: s.since...Date.distantFuture, countsDown: false)
                         .monospacedDigit().frame(maxWidth: 56).foregroundStyle(red)
@@ -82,6 +92,21 @@ private struct LockScreenOutage: View {
             if let r = state.restoredAt {
                 Text("не було \(Fmt.duration(r.timeIntervalSince(state.since)))")
                     .font(.system(size: 28, weight: .semibold, design: .rounded))
+            } else if let end = state.plannedEnd, end > .now {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(timerInterval: Date.now...end, countsDown: true)
+                        .font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text("увімкнуть о \(Fmt.time(end))").font(.caption.weight(.semibold))
+                        Text("за графіком · з \(Fmt.time(state.since))").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if let empty = state.emptyAt, empty > .now {
+                    Text(empty > end ? "батареї вистачить з запасом (до \(Fmt.time(empty)))"
+                                     : "⚠️ батареї вистачить лише до \(Fmt.time(empty))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             } else {
                 HStack(alignment: .firstTextBaseline) {
                     Text(timerInterval: state.since...Date.distantFuture, countsDown: false)

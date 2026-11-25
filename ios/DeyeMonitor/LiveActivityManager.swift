@@ -8,11 +8,12 @@ enum LiveActivityManager {
     static func demoIfRequested() {
         guard CommandLine.arguments.contains("-demoOutage"), Activity<OutageAttributes>.activities.isEmpty else { return }
         let state = OutageAttributes.ContentState(since: .now.addingTimeInterval(-4980), soc: 64,
-                                                  emptyAt: .now.addingTimeInterval(7.5 * 3600), load: 380)
+                                                  emptyAt: .now.addingTimeInterval(7.5 * 3600), load: 380,
+                                                  plannedEnd: .now.addingTimeInterval(2.5 * 3600))
         _ = try? Activity.request(attributes: OutageAttributes(), content: ActivityContent(state: state, staleDate: nil), pushType: nil)
     }
 
-    static func sync(with live: Live?) {
+    static func sync(with live: Live?, schedule: Schedule? = nil) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled, let live, live.error == nil,
               !CommandLine.arguments.contains("-demoOutage") else { return }
         let current = Activity<OutageAttributes>.activities.first
@@ -20,7 +21,8 @@ enum LiveActivityManager {
         if live.gridOn == false, !live.isStale {
             let since = live.sinceDate ?? current?.content.state.since ?? .now
             let empty = live.runtimeH.flatMap { $0 > 0 ? Date.now.addingTimeInterval($0 * 3600) : nil }
-            let state = OutageAttributes.ContentState(since: since, soc: live.soc, emptyAt: empty, load: live.load)
+            let state = OutageAttributes.ContentState(since: since, soc: live.soc, emptyAt: empty, load: live.load,
+                                                      plannedEnd: schedule?.plannedEnd(since: since))
             let content = ActivityContent(state: state, staleDate: .now.addingTimeInterval(30 * 60))
             if let current {
                 Task { await current.update(content) }

@@ -48,6 +48,30 @@ struct Schedule: Decodable {
     let tomorrow: ScheduleDay?
 }
 
+extension Schedule {
+    /// When the power should come back by the schedule, for an outage that is going on now.
+    /// Back-to-back slots (e.g. 22:00–24:00 today and 00:00–02:00 tomorrow) count as one.
+    /// Returns a past date when the planned end has passed but the power is still off.
+    func plannedEnd(now: Date = .now, since: Date? = nil) -> Date? {
+        let slots = [today, tomorrow].compactMap { $0 }.filter(\.applies).flatMap(\.intervals)
+            .sorted { $0.start < $1.start }
+        var merged: [DateInterval] = []
+        for s in slots {
+            if let last = merged.last, s.start.timeIntervalSince(last.end) <= 60 {
+                merged[merged.count - 1] = DateInterval(start: last.start, end: max(last.end, s.end))
+            } else {
+                merged.append(s)
+            }
+        }
+        if let cur = merged.first(where: { $0.contains(now) }) { return cur.end }
+        // power went out during a slot that has already ended: the end is overdue
+        if let since, let past = merged.last(where: { $0.contains(since) || ($0.start > since && $0.end < now) }) {
+            return past.end
+        }
+        return nil
+    }
+}
+
 struct ScheduleDay: Decodable {
     let date: String
     let status: String
