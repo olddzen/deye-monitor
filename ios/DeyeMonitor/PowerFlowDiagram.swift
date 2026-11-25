@@ -60,7 +60,9 @@ struct PowerFlowDiagram: View {
                : Flow(active: load > 5, forward: true, color: Theme.warning)
     }
     private var batteryFlow: Flow {
-        Flow(active: live.soc != nil && abs(bp) > 20, forward: bp > 0, color: bp > 0 ? Theme.warning : Theme.good)
+        // off-grid the battery is what feeds the flat, whatever small number the inverter reports
+        gridOn ? Flow(active: live.soc != nil && abs(bp) > 20, forward: bp > 0, color: bp > 0 ? Theme.warning : Theme.good)
+               : Flow(active: live.soc != nil && load > 5, forward: true, color: Theme.warning)
     }
 
     var body: some View {
@@ -105,7 +107,7 @@ struct PowerFlowDiagram: View {
     private var batteryCaption: String {
         guard live.soc != nil else { return "Батарея" }
         if bp < -20 { return "заряд \(Int(-bp)) Вт" }
-        if bp > 20 { return "розряд \(Int(bp)) Вт" }
+        if bp > 20 || (!gridOn && bp > 0) { return "розряд \(Int(bp)) Вт" }
         return "Батарея"
     }
 

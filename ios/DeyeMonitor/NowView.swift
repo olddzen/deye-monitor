@@ -22,7 +22,6 @@ struct NowView: View {
                     }
                     BatteryCard(live: live, stats: stats, state: state)
                     PowerFlowCard(live: live)
-                    CalculatorCard(live: live, stats: stats)
                 } else if let error = store.error {
                     Text(error).foregroundStyle(.secondary).glassCard()
                 } else {
@@ -160,9 +159,9 @@ private struct BatteryCard: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(bp < -20 ? (soc >= 99 ? "повна · підтримується" : "заряджається")
-                             : bp > 20 ? "розряджається" : "у спокої")
+                             : math.isDischarging ? "розряджається" : "у спокої")
                             .font(.subheadline.weight(.medium))
-                        if abs(bp) > 20 { Text("\(Int(abs(bp))) Вт").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+                        if abs(bp) > 20 || math.isDischarging { Text("\(Int(abs(bp))) Вт").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
                     }
                 }
                 CapsuleMeter(fraction: soc / 100, tint: soc < 20 ? Theme.critical : soc < 40 ? Theme.warning : state.accent)
@@ -192,80 +191,6 @@ private struct BatteryCard: View {
 }
 
 // MARK: - Power flow
-
-private struct FlowCard: View {
-    let live: Live
-
-    var body: some View {
-        let gp = live.gridPower ?? 0, load = live.load ?? 0, bp = live.batteryPower ?? 0
-        let gridOn = live.gridOn == true
-        VStack(alignment: .leading, spacing: 14) {
-            SectionLabel(text: "Енергія зараз")
-            HStack(spacing: 0) {
-                node("bolt.fill", gridOn ? "\(Int(gp)) Вт" : "немає", "мережа", dim: !gridOn)
-                link(active: gridOn && abs(gp) > 5, reverse: gp < 0)
-                node("battery.100percent.bolt", live.soc == nil ? "—" : abs(bp) <= 20 ? "0 Вт" : "\(Int(abs(bp))) Вт",
-                     bp < -20 ? "заряд" : bp > 20 ? "розряд" : "батарея", dim: live.soc == nil)
-                link(active: load > 5, reverse: false)
-                node("house.fill", "\(Int(load)) Вт", "квартира", dim: false)
-            }
-        }
-        .glassCard()
-    }
-
-    private func node(_ symbol: String, _ value: String, _ caption: String, dim: Bool) -> some View {
-        VStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .modifier(GlassCircle())
-                .opacity(dim ? 0.4 : 1)
-            Text(value).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-            Text(caption).font(.caption2).foregroundStyle(.secondary)
-        }
-        .frame(width: 78)
-    }
-
-    private func link(active: Bool, reverse: Bool) -> some View {
-        FlowLink(active: active, reverse: reverse)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 4)
-            .padding(.bottom, 38)
-    }
-}
-
-/// A calm connector: a thin line with one soft "comet" gliding in the direction of the energy.
-private struct FlowLink: View {
-    let active: Bool
-    let reverse: Bool
-    @State private var progress: CGFloat = 0
-
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width, comet: CGFloat = 26
-            ZStack(alignment: .leading) {
-                Capsule().fill(active ? Theme.series.opacity(0.22) : Color.primary.opacity(0.08)).frame(height: 2)
-                if active {
-                    Capsule()
-                        .fill(LinearGradient(colors: [Theme.series.opacity(0), Theme.series],
-                                             startPoint: reverse ? .trailing : .leading,
-                                             endPoint: reverse ? .leading : .trailing))
-                        .frame(width: comet, height: 3)
-                        .offset(x: (reverse ? 1 - progress : progress) * (w + comet) - comet)
-                }
-            }
-            .frame(maxHeight: .infinity)
-            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.15),
-                                         .init(color: .black, location: 0.85), .init(color: .clear, location: 1)],
-                                 startPoint: .leading, endPoint: .trailing))  // soft fade at both ends
-        }
-        .frame(height: 8)
-        .onAppear {
-            progress = 0
-            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) { progress = 1 }
-        }
-    }
-}
 
 // MARK: - Today
 

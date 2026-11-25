@@ -12,6 +12,8 @@ struct BatteryMath {
     let ratedKwh: Double
     let healthKwh: Double?
     let minSoc: Double
+    /// Off-grid the battery is the only source, so any discharge counts (no idle threshold).
+    let offGrid: Bool
 
     init(live: Live?, stats: Stats?, minSoc: Double) {
         soc = live?.soc
@@ -20,6 +22,7 @@ struct BatteryMath {
         ratedKwh = rated ?? stats?.battery?.nominalKwh ?? 11.8
         healthKwh = stats?.battery?.capacityKwh
         self.minSoc = minSoc
+        offGrid = live?.gridOn == false
     }
 
     /// Best estimate of what the pack holds when full.
@@ -27,7 +30,7 @@ struct BatteryMath {
     var storedKwh: Double? { soc.map { $0 / 100 * capacityKwh } }
     var usableKwh: Double? { soc.map { max(0, $0 - minSoc) / 100 * capacityKwh } }
     var isCharging: Bool { powerW < -20 }
-    var isDischarging: Bool { powerW > 20 }
+    var isDischarging: Bool { powerW > (offGrid ? 0 : 20) }
 
     /// Hours until the cut-off at a given load in watts.
     func hours(atLoad watts: Double) -> Double? {
