@@ -166,7 +166,8 @@ private struct BatteryCard: View {
                 }
                 CapsuleMeter(fraction: soc / 100, tint: soc < 20 ? Theme.critical : soc < 40 ? Theme.warning : state.accent)
                 HStack {
-                    if math.isDischarging, let h = math.hours(atLoad: bp) {
+                    // same draw as the outage card: the larger of the flat's load and the battery discharge
+                    if math.isDischarging, let h = math.hours(atLoad: max(bp, live.load ?? 0)) {
                         Label("вистачить ≈ \(Fmt.duration(h * 3600))", systemImage: "hourglass")
                     } else if let h = math.hoursToFull {
                         Label("повна через \(Fmt.duration(h * 3600))", systemImage: "bolt.fill")
