@@ -14,7 +14,7 @@ struct NowView: View {
                 if let live {
                     Hero(live: live, stats: stats, state: state)
                         .padding(.vertical, 18)
-                    BatteryCard(live: live, state: state)
+                    BatteryCard(live: live, stats: stats, state: state)
                     CalculatorCard(live: live, stats: stats)
                     FlowCard(live: live)
                 } else if let error = store.error {
@@ -113,11 +113,15 @@ struct GlassCircle: ViewModifier {
 
 private struct BatteryCard: View {
     let live: Live
+    let stats: Stats?
     let state: PowerState
+    @AppStorage("minSoc") private var minSoc = BatteryMath.defaultMinSoc
+    @State private var open = false
 
     var body: some View {
         let soc = live.soc
         let bp = live.batteryPower ?? 0
+        let math = BatteryMath(live: live, stats: stats, minSoc: minSoc)
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 SectionLabel(text: "Батарея")
@@ -125,6 +129,7 @@ private struct BatteryCard: View {
                 if let t = live.batteryTemp {
                     Label("\(Int(t))°", systemImage: "thermometer.medium").font(.caption).foregroundStyle(.secondary)
                 }
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
             if let soc {
                 HStack(alignment: .lastTextBaseline) {
@@ -137,15 +142,28 @@ private struct BatteryCard: View {
                     }
                 }
                 CapsuleMeter(fraction: soc / 100, tint: soc < 20 ? Theme.critical : soc < 40 ? Theme.warning : state.accent)
-                if let h = live.runtimeH, h > 0 {
-                    Label("вистачить ≈ \(Fmt.duration(h * 3600))", systemImage: "hourglass")
-                        .font(.subheadline.weight(.medium))
+                HStack {
+                    if math.isDischarging, let h = math.hours(atLoad: bp) {
+                        Label("вистачить ≈ \(Fmt.duration(h * 3600))", systemImage: "hourglass")
+                    } else if let h = math.hoursToFull {
+                        Label("повна через \(Fmt.duration(h * 3600))", systemImage: "bolt.fill")
+                    } else if let h = math.hours(atLoad: live.load ?? 0) {
+                        Label("без світла вистачить ≈ \(Fmt.duration(h * 3600))", systemImage: "hourglass")
+                    }
+                    Spacer()
+                    if let kwh = math.usableKwh {
+                        Text("\(Fmt.number(kwh)) кВт·год").foregroundStyle(.secondary).monospacedDigit()
+                    }
                 }
+                .font(.subheadline.weight(.medium))
             } else {
                 Text("немає даних від BMS").font(.display(22)).foregroundStyle(.secondary)
             }
         }
         .glassCard()
+        .contentShape(Rectangle())
+        .onTapGesture { open = true }
+        .sheet(isPresented: $open) { BatteryDetailView(live: live, stats: stats) }
     }
 }
 

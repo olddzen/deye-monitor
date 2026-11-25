@@ -24,10 +24,33 @@ struct Live: Decodable {
     let batteryTemp: Double?
     let inverterTemp: Double?
     let error: String?
+    let battery: BatteryLive?
+    let today: TodayLive?
+    let acTemp: Double?
 
     var isStale: Bool { stale ?? (updated == nil) }
     var sinceDate: Date? { since.map { Date(timeIntervalSince1970: $0) } }
     var updatedDate: Date? { updated.map { Date(timeIntervalSince1970: $0) } }
+}
+
+struct BatteryLive: Decodable {
+    let voltage: Double?
+    let current: Double?
+    let bmsVoltage: Double?
+    let bmsCurrent: Double?
+    let chargeVoltage: Double?
+    let chargeLimitA: Double?
+    let dischargeLimitA: Double?
+    let ratedAh: Double?
+    let todayChargedKwh: Double?
+    let todayDischargedKwh: Double?
+    let totalChargedKwh: Double?
+    let totalDischargedKwh: Double?
+}
+
+struct TodayLive: Decodable {
+    let consumptionKwh: Double?
+    let importedKwh: Double?
 }
 
 struct Outage: Decodable, Identifiable {

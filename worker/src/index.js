@@ -326,6 +326,20 @@ async function liveData(env) {
     soc, batteryPower, runtimeH,
     batteryTemp: bmsSilent ? null : bmsTemp, inverterTemp: num("DC Temperature"),
     relay: p.GridRelayStatus || null,
+    // detailed battery / energy points for the app's battery screen
+    battery: {
+      voltage: num("BatteryVoltage"), current: num("BatteryCurrent"),
+      bmsVoltage: num("BMSVoltage"), bmsCurrent: num("BMSCurrent"),
+      chargeVoltage: num("BMSChargeVoltage"),
+      chargeLimitA: num("ChargeCurrentLimit"), dischargeLimitA: num("DischargeCurrentLimit"),
+      ratedAh: num("BatteryRatedCapacity"),
+      todayChargedKwh: num("DailyChargingEnergy"), todayDischargedKwh: num("DailyDischargingEnergy"),
+      totalChargedKwh: num("TotalChargeEnergy"), totalDischargedKwh: num("TotalDischargeEnergy"),
+    },
+    today: {
+      consumptionKwh: num("DailyConsumption"), importedKwh: num("DailyEnergyPurchased"),
+    },
+    acTemp: num("AC Temperature"),
   };
 }
 
