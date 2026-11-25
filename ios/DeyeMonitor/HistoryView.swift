@@ -38,7 +38,7 @@ struct HistoryView: View {
     private var dayButton: some View {
         Button { showDay = true } label: {
             HStack(spacing: 12) {
-                Image(systemName: "calendar.day.timeline.left").font(.system(size: 18, weight: .semibold))
+                Image(systemName: "calendar").font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Theme.series).frame(width: 28)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Будь-який день").font(.subheadline.weight(.semibold))

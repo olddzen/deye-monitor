@@ -12,3 +12,4 @@ ios/build/
 xcuserdata/
 DerivedData/
 ios/build-device/
+build-sim/

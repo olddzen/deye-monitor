@@ -12,6 +12,9 @@ struct ConsumptionCard: View {
         var id: Int { hour }
     }
 
+    /// The inverter reports ~0 W at night when nothing is on its output: no standby to talk about then.
+    private var base: Double? { insights.baseLoadW.flatMap { $0 >= 5 ? $0 : nil } }
+
     private var bars: [Bar] {
         (insights.hourlyW ?? []).enumerated().compactMap { h, w in w.map { Bar(hour: h, watts: $0) } }
     }
@@ -21,10 +24,10 @@ struct ConsumptionCard: View {
             SectionLabel(text: "Що їсть енергію · 14 днів")
             if !bars.isEmpty {
                 Chart(bars) { b in
-                    BarMark(x: .value("Година", b.hour), y: .value("Вт", b.watts), width: .ratio(0.7))
+                    BarMark(x: .value("Година", b.hour), y: .value("Вт", b.watts), width: .fixed(9))
                         .foregroundStyle(b.hour == insights.peakHour ? Theme.warning : Theme.series.opacity(0.75))
-                        .clipShape(.rect(topLeadingRadius: 3, topTrailingRadius: 3))
-                    if let base = insights.baseLoadW {
+                        .cornerRadius(3)
+                    if let base {
                         RuleMark(y: .value("Фон", base))
                             .foregroundStyle(.secondary.opacity(0.6))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
@@ -47,7 +50,7 @@ struct ConsumptionCard: View {
             }
 
             VStack(spacing: 10) {
-                if let base = insights.baseLoadW {
+                if let base {
                     row("moon.zzz.fill", "Фонове споживання", "\(Int(base)) Вт цілодобово",
                         insights.standbyMonthUah.map { "≈ \(Int($0)) ₴/міс" })
                 }
@@ -69,7 +72,7 @@ struct ConsumptionCard: View {
         var parts: [String] = []
         if let h = insights.peakHour { parts.append("найбільше о \(h):00") }
         if let e = insights.eveningShare { parts.append("вечір 18–23 — \(Int(e))% споживання") }
-        if insights.baseLoadW != nil { parts.append("пунктир — фон") }
+        if base != nil { parts.append("пунктир — фон") }
         return parts.joined(separator: " · ")
     }
 
@@ -80,7 +83,7 @@ struct ConsumptionCard: View {
     }
 
     private var tip: String? {
-        guard let base = insights.baseLoadW else { return nil }
+        guard let base else { return nil }
         if base >= 150 {
             let saved = 50.0 * 24 * 30 / 1000  // kWh a month per 50 W of standby
             let uah = tariff.map { " (≈ \(Int(saved * $0)) ₴)" } ?? ""

@@ -288,7 +288,11 @@ def consumption_insights(pts14: Sequence[dict], now: float, tz: str, tariff: flo
     week_pts = [p for p in pts14 if p["ts"] >= now - 7 * 86400]
     prev_pts = [p for p in pts14 if p["ts"] < now - 7 * 86400]
     week = integrate_kwh(week_pts, "load_power")
-    prev = integrate_kwh(prev_pts, "load_power") if len(prev_pts) > 0.6 * 7 * 288 else None
+    prev_known = sum(1 for p in prev_pts if p.get("load_power") is not None)
+    week_known = sum(1 for p in week_pts if p.get("load_power") is not None)
+    # compare only when last week was measured about as fully as this one
+    prev = (integrate_kwh(prev_pts, "load_power")
+            if prev_known > 0.6 * 7 * 288 and prev_known > 0.8 * week_known else None)
     # average import over full local days that have most of their points
     days: Dict[str, List[dict]] = {}
     for p in pts14:
@@ -299,6 +303,8 @@ def consumption_insights(pts14: Sequence[dict], now: float, tz: str, tariff: flo
     known = [w for w in hourly if w is not None]
     total = sum(known)
     evening = sum(w for h, w in enumerate(hourly) if w is not None and 18 <= h < 23)
+    if base is not None and base < 5:  # the inverter reports ~0 W at night: no meaningful standby figure
+        base = None
     standby_kwh = base * 24 * 30 / 1000 if base else None
     return Insights(
         hourly_w=hourly, base_load_w=base, week_kwh=week, prev_week_kwh=prev, import_day_kwh=imp_day,
