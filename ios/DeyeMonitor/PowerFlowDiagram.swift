@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// «Потік енергії»: the inverter in the middle of a line-drawn house, the grid, the battery and the
-/// flat around it, connected by elbow lines along which soft pulses travel in the direction of power.
+/// «Потік енергії», drawn the way a Deye hybrid actually works: with the grid present, an internal relay
+/// connects the grid straight to the flat (bypass) and the inverter only tops up the battery; without the
+/// grid the inverter feeds the flat from the battery. Soft pulses travel in the direction of power.
 struct PowerFlowCard: View {
     let live: Live
 
@@ -15,8 +16,23 @@ struct PowerFlowCard: View {
                 }
             }
             PowerFlowDiagram(live: live).frame(height: 300)
+            Text(caption).font(.footnote).foregroundStyle(.secondary)
         }
         .glassCard()
+    }
+}
+
+private extension PowerFlowCard {
+    var caption: String {
+        let load = Int(live.load ?? 0), bp = live.batteryPower ?? 0
+        if live.gridOn == true {
+            let own = max(0, Int((live.gridPower ?? 0) - (live.load ?? 0)))
+            let battery = bp < -20 && (live.soc ?? 0) < 99 ? "заряджає батарею" : "тримає батарею повною"
+            return "Світло є: квартира (\(load) Вт) живиться напряму від мережі, в обхід батареї. " +
+                "Інвертор \(battery)" + (own > 5 ? " — це ще ≈ \(own) Вт з мережі." : ".")
+        }
+        if live.soc == nil { return "Світла немає, даних від батареї теж." }
+        return "Світла немає: інвертор живить квартиру від батареї (\(Int(max(bp, 0))) Вт)."
     }
 }
 
@@ -35,12 +51,17 @@ struct PowerFlowDiagram: View {
     private var bp: Double { live.batteryPower ?? 0 }
     private var load: Double { live.load ?? 0 }
 
-    // grid → inverter (import), battery ↔ inverter, inverter → flat
-    private var gridFlow: Flow { Flow(active: gridOn && abs(gp) > 5, forward: gp >= 0, color: Theme.good) }
+    // grid → junction (import), junction → flat, inverter ↔ junction, battery ↔ inverter
+    private var gridFlow: Flow { Flow(active: gridOn && gp > 5, forward: true, color: Theme.good) }
+    private var loadFlow: Flow { Flow(active: load > 5, forward: true, color: gridOn ? Theme.good : Theme.warning) }
+    /// What the inverter takes from (grid on: charging + its own use) or gives to (grid off) the bus.
+    private var inverterFlow: Flow {
+        gridOn ? Flow(active: gp - load > 5, forward: false, color: Theme.good)
+               : Flow(active: load > 5, forward: true, color: Theme.warning)
+    }
     private var batteryFlow: Flow {
         Flow(active: live.soc != nil && abs(bp) > 20, forward: bp > 0, color: bp > 0 ? Theme.warning : Theme.good)
     }
-    private var loadFlow: Flow { Flow(active: load > 5, forward: true, color: Theme.series) }
 
     var body: some View {
         GeometryReader { geo in
@@ -54,8 +75,12 @@ struct PowerFlowDiagram: View {
                     let phase = t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.4) / 2.4
                     Canvas { ctx, _ in
                         draw(&ctx, L.gridPath, gridFlow, phase)
-                        draw(&ctx, L.batteryPath, batteryFlow, phase)
                         draw(&ctx, L.loadPath, loadFlow, phase)
+                        draw(&ctx, L.inverterPath, inverterFlow, phase)
+                        draw(&ctx, L.batteryPath, batteryFlow, phase)
+                        let j = L.junction
+                        ctx.fill(Path(ellipseIn: CGRect(x: j.x - 4, y: j.y - 4, width: 8, height: 8)),
+                                 with: .color(.primary.opacity(0.35)))
                     }
                 }
 
@@ -137,36 +162,46 @@ private struct Layout {
     var inverter: CGPoint { CGPoint(x: size.width * 0.5, y: size.height * 0.5) }
     var grid: CGPoint { CGPoint(x: size.width * 0.84, y: size.height * 0.2) }
     var load: CGPoint { CGPoint(x: size.width * 0.84, y: size.height * 0.8) }
-    var battery: CGPoint { CGPoint(x: size.width * 0.16, y: size.height * 0.5) }
+    var battery: CGPoint { CGPoint(x: size.width * 0.16, y: size.height * 0.5 + 25) }  // tile centre on the line
 
-    private var bus: CGFloat { size.width * 0.66 }  // vertical trunk between the inverter and the right column
+    private var bus: CGFloat { size.width * 0.68 }  // the AC line from the grid down to the flat
     private let r: CGFloat = 12
+    /// where the inverter taps the grid–flat line
+    var junction: CGPoint { CGPoint(x: bus, y: inverter.y) }
 
-    /// grid → inverter: left from the grid tile, down the trunk, into the inverter's right side.
+    /// grid → junction: left from the grid tile, then down the line.
     var gridPath: Path {
-        elbow(from: CGPoint(x: grid.x - 29, y: grid.y + 12), via: bus, to: CGPoint(x: inverter.x + 31, y: inverter.y - 6))
+        var p = Path()
+        let a = CGPoint(x: grid.x - 29, y: grid.y - 12)  // tile centre (chip above, labels below)
+        p.move(to: a)
+        p.addArc(tangent1End: CGPoint(x: bus, y: a.y), tangent2End: junction, radius: r)
+        p.addLine(to: junction)
+        return p
+    }
+    /// junction → flat: on down the line, then right into the flat's tile.
+    var loadPath: Path {
+        var p = Path()
+        let b = CGPoint(x: load.x - 29, y: load.y - 24)
+        p.move(to: junction)
+        p.addArc(tangent1End: CGPoint(x: bus, y: b.y), tangent2End: b, radius: r)
+        p.addLine(to: b)
+        return p
+    }
+    /// inverter → junction (forward = the inverter feeds the line).
+    var inverterPath: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: inverter.x + 31, y: inverter.y))
+        p.addLine(to: junction)
+        return p
     }
     /// battery → inverter.
     var batteryPath: Path {
         var p = Path()
-        p.move(to: CGPoint(x: battery.x + 29, y: battery.y - 4))
-        p.addLine(to: CGPoint(x: inverter.x - 31, y: inverter.y - 4))
+        p.move(to: CGPoint(x: battery.x + 29, y: inverter.y))
+        p.addLine(to: CGPoint(x: inverter.x - 31, y: inverter.y))
         return p
-    }
-    /// inverter → flat.
-    var loadPath: Path {
-        elbow(from: CGPoint(x: inverter.x + 31, y: inverter.y + 6), via: bus, to: CGPoint(x: load.x - 29, y: load.y - 12))
     }
 
-    /// Horizontal → vertical at x = via → horizontal, with rounded corners.
-    private func elbow(from a: CGPoint, via x: CGFloat, to b: CGPoint) -> Path {
-        var p = Path()
-        p.move(to: a)
-        p.addArc(tangent1End: CGPoint(x: x, y: a.y), tangent2End: CGPoint(x: x, y: b.y), radius: r)
-        p.addArc(tangent1End: CGPoint(x: x, y: b.y), tangent2End: b, radius: r)
-        p.addLine(to: b)
-        return p
-    }
 }
 
 /// A quiet line drawing of a house: two gabled volumes and a few windows. Our own, deliberately simple.
