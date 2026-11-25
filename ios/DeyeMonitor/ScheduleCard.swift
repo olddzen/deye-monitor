@@ -70,7 +70,8 @@ struct ScheduleCard: View {
     /// Will the battery cover an outage of this length at the current (or typical) load?
     @ViewBuilder private func batteryVerdict(for duration: TimeInterval) -> some View {
         let math = BatteryMath(live: live, stats: stats, minSoc: minSoc)
-        let load = max(live?.load ?? 0, stats?.battery?.typicalLoadW ?? 0, 50)
+        // the real current draw (battery discharge when off-grid, the flat's load otherwise)
+        let load = max(live?.load ?? 0, math.isDischarging ? math.powerW : 0)
         if let h = math.hours(atLoad: load) {
             let ok = h * 3600 >= duration
             HStack(spacing: 8) {

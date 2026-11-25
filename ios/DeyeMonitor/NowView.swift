@@ -15,7 +15,7 @@ struct NowView: View {
                     Hero(live: live, stats: stats, state: state, schedule: store.response?.schedule)
                         .padding(.vertical, 18)
                     if state == .off, live.soc != nil {
-                        OutageModeCard(live: live, stats: stats)
+                        OutageModeCard(live: live, stats: stats, schedule: store.response?.schedule)
                     }
                     if let schedule = store.response?.schedule {
                         ScheduleCard(schedule: schedule, live: live, stats: stats)
