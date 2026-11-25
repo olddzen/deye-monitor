@@ -6,6 +6,38 @@ struct DashboardResponse: Decodable {
     let data: Stats?
     let generatedAt: Double?
     let schedule: Schedule?
+    let appliances: ApplianceSnapshot?
+}
+
+/// SmartThings appliances right now (worker, cached 60 s).
+struct ApplianceSnapshot: Decodable {
+    let at: Double?
+    let devices: [ApplianceLive]?
+}
+
+struct ApplianceLive: Decodable, Identifiable {
+    let id: String
+    let label: String?
+    let kind: String?
+    let on: Bool?
+    let power: Double?
+    let energyWh: Double?
+    let state: String?
+    let job: String?
+    let remainingMin: Double?
+    let watched: Bool?
+}
+
+/// Per-appliance energy from the collected history (GitHub workflow).
+struct ApplianceStat: Decodable, Identifiable {
+    let id: String
+    let label: String?
+    let kind: String?
+    let todayKwh: Double?
+    let weekKwh: Double?
+    let monthKwh: Double?
+    let dailyKwh: [Double]?
+    let since: Double?
 }
 
 /// Planned outages for our YASNO group (today / tomorrow), minutes from local midnight.
@@ -196,6 +228,7 @@ struct Stats: Decodable {
     let grid30: GridStats?
     let alerts30: [String: Int]?
     let insights: Insights?
+    let appliances: [ApplianceStat]?
 }
 
 /// What eats the energy (last 14 days).

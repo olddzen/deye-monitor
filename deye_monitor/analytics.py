@@ -312,3 +312,55 @@ def consumption_insights(pts14: Sequence[dict], now: float, tz: str, tariff: flo
         standby_month_kwh=standby_kwh, standby_month_uah=standby_kwh * tariff if standby_kwh else None,
         peak_hour=max(range(24), key=lambda h: hourly[h] or 0) if known else None,
         evening_share=evening / total if total else None)
+
+
+def appliance_increments(samples: Sequence[dict]) -> List[Tuple[float, float]]:
+    """(time, Wh) increments for ONE device from SmartThings snapshots. Samsung appliances report a
+    cumulative `energy` counter and/or a `deltaEnergy` per ~15-min report window; each report window is
+    counted once (snapshots repeat it), from the counter when both ends have one, else from the delta."""
+    out: List[Tuple[float, float]] = []
+    prev_end: Optional[float] = None
+    prev_energy: Optional[float] = None
+    for s in sorted(samples, key=lambda x: x["ts"]):
+        end, energy, delta = s.get("report_end"), s.get("energy_wh"), s.get("delta_wh")
+        if end is None or end == prev_end:
+            continue
+        inc = None
+        if energy and prev_energy and energy >= prev_energy:
+            inc = energy - prev_energy
+        if inc is None or (inc == 0 and delta):
+            inc = delta or 0.0
+        if prev_end is not None or delta:  # the first report only sets the baseline counter
+            out.append((end, max(0.0, float(inc))))
+        prev_end, prev_energy = end, energy if energy else prev_energy
+    return out
+
+
+def appliance_stats(samples: Sequence[dict], now: float, tz: str, days: int = 14) -> List[dict]:
+    """Per device: kWh today / 7 d / 30 d and a daily series for the last `days` days."""
+    zone = ZoneInfo(tz)
+    today = datetime.fromtimestamp(now, zone).replace(hour=0, minute=0, second=0, microsecond=0)
+    by_dev: Dict[str, List[dict]] = {}
+    for s in samples:
+        by_dev.setdefault(s["device_id"], []).append(s)
+    out = []
+    for dev, rows in by_dev.items():
+        last = rows[-1]
+        incs = appliance_increments(rows)
+        daily = [0.0] * days
+        t0 = (today - timedelta(days=days - 1)).timestamp()
+        for t, wh in incs:
+            if t >= t0:
+                i = int((datetime.fromtimestamp(t, zone).replace(hour=0, minute=0, second=0, microsecond=0)
+                         - (today - timedelta(days=days - 1))).days)
+                if 0 <= i < days:
+                    daily[i] += wh / 1000
+        out.append({
+            "id": dev, "label": last.get("label"), "kind": last.get("kind"),
+            "today_kwh": round(sum(wh for t, wh in incs if t >= today.timestamp()) / 1000, 2),
+            "week_kwh": round(sum(wh for t, wh in incs if t >= now - 7 * 86400) / 1000, 2),
+            "month_kwh": round(sum(wh for t, wh in incs if t >= now - 30 * 86400) / 1000, 2),
+            "daily_kwh": [round(x, 2) for x in daily],
+            "since": rows[0]["ts"],
+        })
+    return sorted(out, key=lambda d: -d["month_kwh"])

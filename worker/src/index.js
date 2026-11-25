@@ -26,6 +26,11 @@ const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Planned outage schedule (YASNO / DTEK Kyiv). The group is a secret: YASNO_GROUP, e.g. "12.1".
 const YASNO_URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns";
 const SCHEDULE_REMIND_MIN = 30;
+// SmartThings (appliance energy). OAuth app credentials: ST_CLIENT_ID / ST_CLIENT_SECRET; tokens live in KV.
+// ST_WATCH: comma-separated device ids worth a reminder when the grid goes down (e.g. a boiler's smart plug).
+const ST_API = "https://api.smartthings.com/v1";
+const ST_AUTH = "https://auth-global.api.smartthings.com/oauth/token";
+const ST_SCOPE = "r:devices:* x:devices:* r:locations:*";
 const SCHEDULE_STATUS = { ScheduleApplies: "діє графік", WaitingForSchedule: "графік ще не опубліковано",
                           EmergencyShutdowns: "екстрені відключення (графік не діє)" };
 const CACHE_MAX_AGE_MIN = 30;
@@ -74,6 +79,15 @@ export default {
       return new Response("stored");
     }
     if (request.method === "GET" && url.pathname === "/api/day") return dayData(request, env, url);
+    if (request.method === "GET" && url.pathname === "/st/callback") return stCallback(env, url);
+    if (request.method === "GET" && url.pathname === "/st/snapshot") {
+      // appliance snapshot for the GitHub workflow (history is kept there)
+      if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {
+        return new Response("forbidden", { status: 403 });
+      }
+      const snap = await stSnapshot(env).catch((e) => ({ error: String(e.message || e.name) }));
+      return new Response(JSON.stringify(snap), { headers: { "Content-Type": "application/json" } });
+    }
     if (request.method === "GET" && (url.pathname === "/app" || url.pathname === "/app/")) {
       return new Response(APP_HTML, { headers: { "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" } });
@@ -84,6 +98,7 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(liveCheck(env).catch((e) => console.log("live check failed:", e && e.message)));
+    ctx.waitUntil(stKeepFresh(env).catch((e) => console.log("st refresh failed:", e && e.message)));
     if (new Date(event.scheduledTime).getUTCMinutes() % 5 === 0) {
       ctx.waitUntil(dispatchWorkflow(env, "").catch((e) => console.log("dispatch failed:", e && e.message)));
     }
@@ -92,6 +107,7 @@ export default {
 
 // ---------------------------------------------------------------- Telegram
 async function handleUpdate(update, env) {
+  if (update && update.callback_query) return handleCallback(update.callback_query, env);
   const msg = update && update.message;
   if (!msg || !msg.chat || typeof msg.text !== "string") return;
   if (String(msg.chat.id) !== String(env.TELEGRAM_CHAT_ID)) return; // only the owner
@@ -107,6 +123,16 @@ async function handleUpdate(update, env) {
       reply = `Не вдалося отримати дані з Deye: ${esc(e.message || e.name)}`;
     }
     return sendMessage(env, reply);
+  }
+  if (cmd === "smartthings") {
+    if (!env.ST_CLIENT_ID) return sendMessage(env, "SmartThings ще не налаштовано (немає ST_CLIENT_ID).");
+    const state = crypto.randomUUID();
+    await env.KV.put("st_state", state, { expirationTtl: 900 });
+    const link = "https://api.smartthings.com/oauth/authorize?" + new URLSearchParams({
+      client_id: env.ST_CLIENT_ID, response_type: "code", scope: ST_SCOPE, state,
+      redirect_uri: `https://${env.WORKER_HOST}/st/callback` });
+    return sendMessage(env, "🔗 Дозволь доступ до техніки SmartThings (посилання діє 15 хв):",
+                       { inline_keyboard: [[{ text: "Підключити SmartThings", url: link }]] });
   }
   if (cmd === "dashboard" || cmd === "app") {
     return sendMessage(env, "📊 Дашборд", { inline_keyboard: [[{ text: "Відкрити дашборд",
@@ -204,6 +230,7 @@ async function liveCheck(env) {
         `\n🔋 Батарея: ${socText} · навантаження ${load ?? "?"} Вт` +
         (h !== null ? `\n⏳ Вистачить ≈ ${duration(h * 3600)} (до ~${clock(updated + h * 3600)})` : ""));
     }
+    await stOutageReminder(env, gridOn).catch((e) => console.log("st reminder failed:", e && e.message));
     Object.assign(state, { gridOn, since: updated, socFired: [], etaFired: false,
                            fullArmed: gridOn && soc !== null && soc < 95, fullFrom: gridOn ? updated : null });
     await save();
@@ -345,6 +372,155 @@ async function deye(env, path, body, retry = true) {
     throw new Error(`${path} ${data.code || resp.status}`);
   }
   return data;
+}
+
+// ---------------------------------------------------------------- SmartThings
+async function stCallback(env, url) {
+  const page = (text, status = 200) => new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">` +
+    `<body style="font:17px -apple-system,sans-serif;padding:40px;text-align:center">${text}</body>`,
+    { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
+  const want = await env.KV.get("st_state");
+  if (!want || url.searchParams.get("state") !== want) return page("Посилання застаріло. Надішли боту /smartthings ще раз.", 400);
+  await env.KV.delete("st_state");
+  const code = url.searchParams.get("code");
+  if (!code) return page("SmartThings не надав доступ.", 400);
+  try {
+    await stTokenRequest(env, { grant_type: "authorization_code", code,
+                                redirect_uri: `https://${env.WORKER_HOST}/st/callback` });
+  } catch (e) {
+    return page(`Не вдалося отримати доступ: ${esc(e.message)}`, 502);
+  }
+  await sendMessage(env, "✅ SmartThings підключено: техніка тепер у статистиці.");
+  return page("✅ Готово! SmartThings підключено, можна закрити сторінку.");
+}
+
+async function stTokenRequest(env, params) {
+  const resp = await fetch(ST_AUTH, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded",
+               Authorization: "Basic " + btoa(`${env.ST_CLIENT_ID}:${env.ST_CLIENT_SECRET}`) },
+    body: new URLSearchParams({ client_id: env.ST_CLIENT_ID, ...params }),
+  });
+  if (!resp.ok) throw new Error(`SmartThings auth HTTP ${resp.status}`);
+  const t = await resp.json();
+  const auth = { access: t.access_token, refresh: t.refresh_token, until: Date.now() + (Number(t.expires_in) || 86399) * 1000 };
+  await env.KV.put("st_auth", JSON.stringify(auth));  // the refresh token rotates: keep the new one
+  return auth;
+}
+
+/** Access token. Only the minute cron refreshes it ahead of time (the refresh token rotates, so two
+ *  concurrent refreshes would lose access); a request finds an expired token only if the cron failed. */
+async function stToken(env) {
+  const auth = await env.KV.get("st_auth", "json");
+  if (!auth) return null;
+  if (auth.until > Date.now()) return auth.access;
+  return (await stTokenRequest(env, { grant_type: "refresh_token", refresh_token: auth.refresh })).access;
+}
+
+async function stKeepFresh(env) {
+  const auth = await env.KV.get("st_auth", "json");
+  if (auth && auth.until - Date.now() < 2 * 3600 * 1000) {
+    await stTokenRequest(env, { grant_type: "refresh_token", refresh_token: auth.refresh });
+  }
+}
+
+async function st(env, path, init = {}) {
+  const token = await stToken(env);
+  if (!token) throw new Error("SmartThings не підключено");
+  const resp = await fetch(ST_API + path, { ...init,
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init.headers || {}) } });
+  if (!resp.ok) throw new Error(`SmartThings HTTP ${resp.status}`);
+  return resp.status === 204 ? null : resp.json();
+}
+
+function stKind(caps, dev) {
+  if (caps.has("airConditionerMode")) return "ac";
+  if (caps.has("washerOperatingState")) return "washer";
+  if (caps.has("dryerOperatingState")) return "dryer";
+  if (caps.has("dishwasherOperatingState")) return "dishwasher";
+  if (caps.has("refrigeration") || caps.has("contactSensor") && /fridge|refriger/i.test(dev.name || "")) return "fridge";
+  if (caps.has("tvChannel") || /TV/.test(dev.deviceTypeName || "") || /\bTV\b/.test(dev.ocf && dev.ocf.deviceType || "")) return "tv";
+  if (dev.type === "VIPER" || /plug/i.test(dev.name || "")) return "plug";
+  return "other";
+}
+
+/** Appliances that report energy or a running cycle, with their current numbers (edge-cached 60 s). */
+async function stSnapshot(env) {
+  const key = new Request(`https://${env.WORKER_HOST || "w"}/_st_snapshot_cache`);
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const hit = cache && await cache.match(key).catch(() => null);
+  if (hit) return hit.json();
+  const snap = await stSnapshotFresh(env);
+  if (cache) await cache.put(key, new Response(JSON.stringify(snap), { headers: { "Cache-Control": "max-age=60" } })).catch(() => {});
+  return snap;
+}
+
+async function stSnapshotFresh(env) {
+  const list = await st(env, "/devices");
+  const devices = (list.items || []).map((d) => {
+    const caps = new Set((d.components || []).flatMap((c) => (c.capabilities || []).map((x) => x.id)));
+    return { d, caps };
+  }).filter(({ caps }) => caps.has("powerConsumptionReport") || caps.has("powerMeter") || caps.has("energyMeter"));
+  const out = await Promise.all(devices.map(async ({ d, caps }) => {
+    const s = await st(env, `/devices/${d.deviceId}/status`).catch(() => null);
+    const m = (s && s.components && s.components.main) || {};
+    const v = (cap, attr) => m[cap] && m[cap][attr] ? m[cap][attr].value : null;
+    const rep = v("powerConsumptionReport", "powerConsumption") || {};
+    const op = m["samsungce.washerOperatingState"] || m["samsungce.dryerOperatingState"] || null;
+    return {
+      id: d.deviceId, label: d.label || d.name, kind: stKind(caps, d),
+      on: v("switch", "switch") === "on",
+      power: v("powerMeter", "power") ?? (typeof rep.power === "number" ? rep.power : null),
+      energyWh: typeof rep.energy === "number" ? rep.energy : v("energyMeter", "energy"),
+      deltaWh: typeof rep.deltaEnergy === "number" ? rep.deltaEnergy : null,
+      reportEnd: rep.end ? Date.parse(rep.end) / 1000 : null,
+      state: op ? (op.operatingState && op.operatingState.value) : null,
+      job: op ? ((op.washerJobState || op.dryerJobState || {}).value || null) : null,
+      remainingMin: op && op.remainingTime ? op.remainingTime.value : null,
+      watched: (env.ST_WATCH || "").split(",").includes(d.deviceId),
+    };
+  }));
+  return { at: Date.now() / 1000, devices: out };
+}
+
+/** Grid lost / back: remind about watched appliances (e.g. the boiler) with a one-tap switch. */
+async function stOutageReminder(env, gridOn) {
+  if (!env.ST_WATCH) return;
+  const ids = env.ST_WATCH.split(",").filter(Boolean);
+  for (const id of ids) {
+    const [dev, status] = await Promise.all([st(env, `/devices/${id}`), st(env, `/devices/${id}/status`)]);
+    const on = (((status.components || {}).main || {}).switch || {}).switch;
+    const label = esc(dev.label || dev.name || "Прилад");
+    if (!gridOn && on && on.value === "on") {
+      await sendMessage(env, `🔥 <b>${label} увімкнено, а світла немає</b>\nВін швидко посадить батарею.`,
+        { inline_keyboard: [[{ text: `Вимкнути: ${dev.label || "прилад"}`, callback_data: `st:off:${id}` }]] });
+    } else if (gridOn && on && on.value === "off") {
+      await sendMessage(env, `💡 Світло є, а <b>${label}</b> вимкнено.`,
+        { inline_keyboard: [[{ text: `Увімкнути: ${dev.label || "прилад"}`, callback_data: `st:on:${id}` }]] });
+    }
+  }
+}
+
+async function handleCallback(q, env) {
+  const chat = q.message && q.message.chat && q.message.chat.id;
+  if (String(chat) !== String(env.TELEGRAM_CHAT_ID)) return;  // only the owner's chat
+  const [kind, action, id] = String(q.data || "").split(":");
+  let note = "Невідома дія";
+  if (kind === "st" && (action === "on" || action === "off") && (env.ST_WATCH || "").split(",").includes(id)) {
+    try {
+      await st(env, `/devices/${id}/commands`, { method: "POST",
+        body: JSON.stringify({ commands: [{ component: "main", capability: "switch", command: action }] }) });
+      note = action === "off" ? "Вимкнено ✅" : "Увімкнено ✅";
+      await sendMessage(env, action === "off" ? "🔌 Вимкнув. Батарея протримається довше." : "🔌 Увімкнув.");
+    } catch (e) {
+      note = "Не вдалося";
+      await sendMessage(env, `Не вдалося керувати приладом: ${esc(e.message)}`);
+    }
+  }
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: q.id, text: note }) });
 }
 
 // ---------------------------------------------------------------- planned schedule (YASNO)
@@ -560,13 +736,14 @@ async function dashboardData(request, env) {
   if (!appTokenOk(request, env) && !(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
     return new Response("forbidden", { status: 403 });
   }
-  const [live, cache, sched] = await Promise.all([
+  const [live, cache, sched, appliances] = await Promise.all([
     liveData(env).catch((e) => ({ error: String(e.message || e.name) })),
     env.KV.get("reports", "json").catch(() => null),
     schedule(env).catch(() => null),
+    stSnapshot(env).catch(() => null),
   ]);
   return new Response(JSON.stringify({ live, data: cache && cache.data, generated_at: cache && cache.generated_at,
-                                       schedule: sched }), {
+                                       schedule: sched, appliances }), {
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }

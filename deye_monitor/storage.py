@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS points (
     soc REAL, battery_power REAL, battery_temp REAL, dc_temp REAL, ac_temp REAL,
     charge_total REAL, discharge_total REAL
 );
+CREATE TABLE IF NOT EXISTS appliance_samples (
+    ts INTEGER NOT NULL, device_id TEXT NOT NULL, label TEXT, kind TEXT, energy_wh REAL, delta_wh REAL,
+    report_end REAL, is_on INTEGER, PRIMARY KEY (ts, device_id)
+);
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id TEXT PRIMARY KEY, name TEXT, level INTEGER, start_ts REAL, end_ts REAL
 );
@@ -125,6 +129,7 @@ class Storage:
     def prune(self, before_ts: float) -> None:
         self._exec("DELETE FROM samples WHERE ts < ?", (before_ts,))
         self._exec("DELETE FROM points WHERE ts < ?", (int(before_ts),))
+        self._exec("DELETE FROM appliance_samples WHERE ts < ?", (int(before_ts),))
 
     # --- 5-minute points (from Deye history or live readings) ---
     def upsert_points(self, rows: List[dict]) -> int:
@@ -140,6 +145,22 @@ class Storage:
                 [(int(r["ts"]), *(r.get(c) for c in POINT_COLUMNS)) for r in rows])
             self._db.commit()
         return len(rows)
+
+    def add_appliance_samples(self, ts: float, devices: List[dict]) -> None:
+        """One SmartThings snapshot: [{id, label, kind, energyWh, deltaWh, reportEnd, on}, ...]."""
+        with self._lock:
+            self._db.executemany(
+                "INSERT OR REPLACE INTO appliance_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [(int(ts), d["id"], d.get("label"), d.get("kind"), d.get("energyWh"), d.get("deltaWh"),
+                  d.get("reportEnd"), int(bool(d.get("on")))) for d in devices if d.get("id")])
+            self._db.commit()
+
+    def appliance_samples_between(self, start: float, end: float) -> List[dict]:
+        cur = self._exec("SELECT ts, device_id, label, kind, energy_wh, delta_wh, report_end, is_on "
+                         "FROM appliance_samples WHERE ts >= ? AND ts <= ? ORDER BY device_id, ts",
+                         (int(start), int(end)))
+        names = ("ts", "device_id", "label", "kind", "energy_wh", "delta_wh", "report_end", "is_on")
+        return [dict(zip(names, row)) for row in cur.fetchall()]
 
     def points_between(self, start: float, end: float) -> List[dict]:
         cur = self._exec(f"SELECT ts, {', '.join(POINT_COLUMNS)} FROM points WHERE ts >= ? AND ts <= ? "

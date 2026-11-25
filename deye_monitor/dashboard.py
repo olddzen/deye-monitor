@@ -112,6 +112,7 @@ def build_data(db: Storage, cfg, now: float) -> dict:
                      "standby_month_uah": _r(ins.standby_month_uah, 0),
                      "peak_hour": ins.peak_hour, "evening_share": _r(ins.evening_share * 100, 0)
                      if ins.evening_share is not None else None},
+        "appliances": A.appliance_stats(db.appliance_samples_between(now - 30 * DAY, now), now, tz),
         "alerts30": A.alert_counts(db.alerts_between(now - 30 * DAY, now), min_level=1),
     }
 

@@ -8,6 +8,7 @@ const KV = {
   async put(k, v) { kv.set(k, v); }, async delete(k) { kv.delete(k); },
 };
 let yasno = {};
+let stAuthCalls = [], stCommands = [], stPlugOn = "on";
 let deyeNow = { v: 230, soc: 90, t: 0, temp: 22, bp: 300 }, alerts = [], sent = [], photos = 0, dispatched = 0;
 globalThis.fetch = async (url, init = {}) => {
   url = String(url);
@@ -18,6 +19,22 @@ globalThis.fetch = async (url, init = {}) => {
                { key: "Temperature- Battery", value: String(deyeNow.temp) }, { key: "BatteryPower", value: String(deyeNow.bp) },
                { key: "TotalConsumptionPower", value: "300" }] }] });
   if (url.includes("app.yasno.ua")) return json(yasno);
+  if (url.includes("auth-global.api.smartthings.com")) {
+    stAuthCalls.push(String(init.body)); return json({ access_token: "sta", refresh_token: "str" + stAuthCalls.length, expires_in: 86399 });
+  }
+  if (url.includes("api.smartthings.com/v1/devices/plug1/commands")) { stCommands.push(JSON.parse(init.body)); return json({}); }
+  if (url.includes("api.smartthings.com/v1/devices/plug1/status") || url.includes("api.smartthings.com/v1/devices/ac1/status")) {
+    const plug = url.includes("plug1");
+    return json({ components: { main: { switch: { switch: { value: plug ? stPlugOn : "off" } },
+      powerConsumptionReport: { powerConsumption: { value: { energy: plug ? 794 : 10940, deltaEnergy: 0, end: "2026-11-25T11:30:00Z" } } } } } });
+  }
+  if (url.includes("api.smartthings.com/v1/devices/plug1")) return json({ deviceId: "plug1", label: "Бойлер" });
+  if (url.endsWith("api.smartthings.com/v1/devices")) return json({ items: [
+    { deviceId: "plug1", label: "Бойлер", name: "plug-energy-usage-report", type: "VIPER",
+      components: [{ capabilities: [{ id: "switch" }, { id: "powerConsumptionReport" }] }] },
+    { deviceId: "ac1", label: "Кондиціонер", components: [{ capabilities: [{ id: "airConditionerMode" }, { id: "powerConsumptionReport" }] }] },
+    { deviceId: "spk", label: "Колонка", components: [{ capabilities: [{ id: "switch" }] }] }] });
+  if (url.includes("answerCallbackQuery")) return json({ ok: true });
   if (url.includes("/device/alertList")) return json({ success: true, alertList: alerts });
   if (url.includes("/sendMessage")) { sent.push(JSON.parse(init.body).text); return json({ ok: true }); }
   if (url.includes("/sendPhoto")) { photos++; return json({ ok: true }); }
@@ -131,4 +148,34 @@ assert.equal((await get("/api/day?date=2026-11-21", "Bearer a")).status, 404);
 assert.equal((await get("/api/day?date=x", "Bearer a")).status, 400);
 const dash = await (await get("/api/data", "Bearer a")).json();
 assert.deepEqual(dash.schedule.today.off.length, nowMin + 20 < 1440 ? 1 : 0);
+// SmartThings: connect via /smartthings + callback, snapshot, outage reminder with a button
+Object.assign(env, { ST_CLIENT_ID: "cid", ST_CLIENT_SECRET: "sec", WORKER_HOST: "w.example", ST_WATCH: "plug1" });
+const tgTasks = [];
+const tg = async (update) => { await worker.fetch(req("/telegram", JSON.stringify(update), { "X-Telegram-Bot-Api-Secret-Token": "w" }),
+                                                  env, { waitUntil: (p) => tgTasks.push(p) }); await Promise.all(tgTasks); };
+await tg({ message: { chat: { id: 1 }, text: "/smartthings" } });
+const stState = kv.get("st_state");
+assert.ok(stState);
+r = await get(`/st/callback?code=c1&state=wrong`); assert.equal(r.status, 400);
+r = await get(`/st/callback?code=c1&state=${stState}`); assert.equal(r.status, 200);
+assert.match(stAuthCalls[0], /grant_type=authorization_code/); assert.equal(JSON.parse(kv.get("st_auth")).refresh, "str1");
+assert.match(sent.at(-1), /SmartThings підключено/);
+r = await worker.fetch(new Request("https://w/st/snapshot", { headers: { "X-Cache-Secret": "c" } }), env, { waitUntil() {} });
+const snap = await r.json();
+assert.deepEqual(snap.devices.map((d) => [d.id, d.kind, d.energyWh, d.watched]), [["plug1", "plug", 794, true], ["ac1", "ac", 10940, false]]);
+assert.equal((await get("/st/snapshot")).status, 403);
+// grid lost with the boiler on → reminder with a button; pressing it switches the plug off
+await tick({ v: 0, soc: 90, bp: 300 });
+const remind = sent.find((m) => m.includes("Бойлер</b> увімкнено") || m.includes("Бойлер увімкнено"));
+assert.ok(remind, "boiler reminder");
+await tg({ callback_query: { id: "q1", data: "st:off:plug1", message: { chat: { id: 1 } } } });
+assert.deepEqual(stCommands[0].commands[0], { component: "main", capability: "switch", command: "off" });
+await tg({ callback_query: { id: "q2", data: "st:off:other", message: { chat: { id: 1 } } } });
+assert.equal(stCommands.length, 1);                                            // only watched devices
+await tg({ callback_query: { id: "q3", data: "st:off:plug1", message: { chat: { id: 666 } } } });
+assert.equal(stCommands.length, 1);                                            // only the owner's chat
+// token refresh by the cron when close to expiry
+kv.set("st_auth", JSON.stringify({ access: "old", refresh: "str1", until: Date.now() + 60000 }));
+await run(1);
+assert.match(stAuthCalls.at(-1), /grant_type=refresh_token&refresh_token=str1/);
 console.log("worker tests passed:", sent.length, "messages");

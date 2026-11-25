@@ -203,6 +203,19 @@ def publish_cache(cfg: Config, mon: Monitor) -> None:
         log.warning("cache upload failed: %s", type(exc).__name__)
 
 
+def collect_appliances(cfg: Config, db: Storage) -> None:
+    """SmartThings appliance counters via the worker (it holds the OAuth tokens); history is kept here."""
+    import requests
+    try:
+        resp = requests.get(f"{cfg.worker_url}/st/snapshot", headers={"X-Cache-Secret": cfg.cache_secret}, timeout=30)
+        snap = resp.json() if resp.status_code == 200 else {}
+    except Exception as exc:
+        log.warning("appliances: %s", type(exc).__name__)
+        return
+    if snap.get("devices"):
+        db.add_appliance_samples(snap.get("at") or time.time(), snap["devices"])
+
+
 def publish_days(cfg: Config, db: Storage) -> None:
     """Per-day point archives for the app's day picker (KV: one key per day, few writes)."""
     import requests
@@ -253,6 +266,7 @@ def once(cfg: Config) -> None:
     mon.save_state()
     maintenance(cfg, db, reader, tg, mon)
     if cfg.worker_url and cfg.cache_secret:
+        collect_appliances(cfg, db)
         publish_cache(cfg, mon)
         publish_days(cfg, db)
     if tg:

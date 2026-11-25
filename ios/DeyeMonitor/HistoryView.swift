@@ -15,6 +15,10 @@ struct HistoryView: View {
                     if let ins = stats.insights, ins.weekKwh != nil {
                         ConsumptionCard(insights: ins, tariff: stats.energy30?.tariff)
                     }
+                    if !(stats.appliances ?? []).isEmpty || !(store.response?.appliances?.devices ?? []).isEmpty {
+                        AppliancesCard(live: store.response?.appliances, stats: stats.appliances ?? [],
+                                       tariff: stats.energy30?.tariff)
+                    }
                     if let charts = store.charts {
                         OutageCalendar(days: stats.daily30 ?? [], version: charts.version).equatable()
                         HeatmapCard(rows: stats.heatmap28 ?? [], version: charts.version).equatable()
