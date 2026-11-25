@@ -59,12 +59,12 @@ struct OutageModeCard: View {
 
     /// Two common heavy appliances, to show what switching one on costs.
     private var heavyHints: [Appliance] {
-        Appliance.presets.filter { ["kettle", "heater"].contains($0.id) }
+        Appliance.presets.filter { ["boiler", "microwave"].contains($0.id) }
     }
 
     private var tip: String? {
         guard let eco = economyW, drawW > eco * 2 else { return nil }
-        return "Зараз квартира бере в \(Fmt.number(drawW / eco)) раза більше за фон. Бойлер, обігрівач і духовка — головні «їдці» батареї."
+        return "Зараз квартира бере в \(Fmt.number(drawW / eco)) раза більше за фон. Бойлер (1,5 кВт), індукція й духовка — головні «їдці» батареї."
     }
 
     private func scenario(_ symbol: String, _ title: String, _ detail: String, _ hours: Double,

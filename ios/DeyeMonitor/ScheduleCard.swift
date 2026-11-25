@@ -48,6 +48,7 @@ struct ScheduleCard: View {
             line("clock.fill", "Наступне: \(isToday ? "" : "завтра ")\(Fmt.time(next.start))–\(endText(next))",
                  "через \(Fmt.duration(next.start.timeIntervalSince(now))) · триватиме \(Fmt.duration(next.duration))")
             batteryVerdict(for: next.duration)
+            cycleHint(until: next.start, now: now)
         } else {
             line("checkmark.circle.fill", "Сьогодні більше відключень немає",
                  schedule.tomorrow?.applies == true ? "завтра без відключень" : schedule.tomorrow.map { "завтра: \($0.statusText)" })
@@ -81,6 +82,30 @@ struct ScheduleCard: View {
             }
             .padding(.leading, 36)
         }
+    }
+
+    /// Which program appliances finish before the grid goes (so they don't run on the battery).
+    @ViewBuilder private func cycleHint(until start: Date, now: Date) -> some View {
+        let left = start.timeIntervalSince(now)
+        let cycles = Appliance.presets.filter { $0.cycleH != nil }
+        let fit = cycles.filter { ($0.cycleH ?? 0) * 3600 <= left }
+        let late = cycles.filter { ($0.cycleH ?? 0) * 3600 > left }
+        if left < 8 * 3600, !cycles.isEmpty {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: fit.isEmpty ? "hourglass.bottomhalf.filled" : "checkmark.circle")
+                    .foregroundStyle(fit.isEmpty ? Theme.warning : Theme.good)
+                Text(cycleText(fit: fit, late: late)).font(.footnote).foregroundStyle(.secondary)
+            }
+            .padding(.leading, 36)
+        }
+    }
+
+    private func cycleText(fit: [Appliance], late: [Appliance]) -> String {
+        let name = { (a: Appliance) in "\(a.name.lowercased()) (≈\(Fmt.short((a.cycleH ?? 0) * 3600)))" }
+        var parts: [String] = []
+        if !fit.isEmpty { parts.append("Встигне до відключення: " + fit.map(name).joined(separator: ", ")) }
+        if !late.isEmpty { parts.append((fit.isEmpty ? "Не встигне до відключення: " : "не встигне: ") + late.map(name).joined(separator: ", ")) }
+        return parts.joined(separator: " · ")
     }
 
     private func endText(_ i: DateInterval) -> String {
