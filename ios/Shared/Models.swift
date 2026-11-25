@@ -49,10 +49,8 @@ struct Schedule: Decodable {
 }
 
 extension Schedule {
-    /// When the power should come back by the schedule, for an outage that is going on now.
-    /// Back-to-back slots (e.g. 22:00–24:00 today and 00:00–02:00 tomorrow) count as one.
-    /// Returns a past date when the planned end has passed but the power is still off.
-    func plannedEnd(now: Date = .now, since: Date? = nil) -> Date? {
+    /// Today's and tomorrow's planned outages, back-to-back slots joined.
+    var mergedSlots: [DateInterval] {
         let slots = [today, tomorrow].compactMap { $0 }.filter(\.applies).flatMap(\.intervals)
             .sorted { $0.start < $1.start }
         var merged: [DateInterval] = []
@@ -63,6 +61,17 @@ extension Schedule {
                 merged.append(s)
             }
         }
+        return merged
+    }
+
+    /// The next planned outage that hasn't started yet.
+    func nextPlanned(after now: Date = .now) -> DateInterval? { mergedSlots.first { $0.start > now } }
+
+    /// When the power should come back by the schedule, for an outage that is going on now.
+    /// Back-to-back slots (e.g. 22:00–24:00 today and 00:00–02:00 tomorrow) count as one.
+    /// Returns a past date when the planned end has passed but the power is still off.
+    func plannedEnd(now: Date = .now, since: Date? = nil) -> Date? {
+        let merged = mergedSlots
         if let cur = merged.first(where: { $0.contains(now) }) { return cur.end }
         // power went out during a slot that has already ended: the end is overdue
         if let since, let past = merged.last(where: { $0.contains(since) || ($0.start > since && $0.end < now) }) {
@@ -253,6 +262,19 @@ struct Stats: Decodable {
     let alerts30: [String: Int]?
     let insights: Insights?
     let appliances: [ApplianceStat]?
+    let schedule30: ScheduleAccuracy?
+}
+
+/// Plan vs reality for the YASNO schedule (minutes: positive = later than planned).
+struct ScheduleAccuracy: Decodable {
+    let planned: Int?
+    let happened: Int?
+    let startDeltaMin: Double?
+    let endDeltaMin: Double?
+    let endLateMaxMin: Double?
+    let unplanned: Int?
+    let unplannedH: Double?
+    let since: Double?
 }
 
 /// What eats the energy (last 14 days).

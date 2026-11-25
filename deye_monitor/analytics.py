@@ -364,3 +364,35 @@ def appliance_stats(samples: Sequence[dict], now: float, tz: str, days: int = 14
             "since": rows[0]["ts"],
         })
     return sorted(out, key=lambda d: -d["month_kwh"])
+
+
+def schedule_accuracy(slots: Sequence[Tuple[float, float]], outages: Sequence[Outage], start: float, end: float,
+                      tolerance: float = 3600) -> dict:
+    """How well the published schedule held in [start, end): only slots that have already ended count.
+    An outage belongs to a planned slot when it overlaps the slot widened by `tolerance` on each side;
+    everything else is unplanned. Deltas are in minutes, positive = later than planned."""
+    done = [(s, e) for s, e in slots if e <= end and s >= start]
+    actual = clip(outages, start, end)
+    starts, ends, happened = [], [], 0
+    used = set()
+    for s, e in done:
+        hits = [i for i, (a, b) in enumerate(actual) if a < e + tolerance and b > s - tolerance]
+        if not hits:
+            continue
+        happened += 1
+        used.update(hits)
+        starts.append((actual[hits[0]][0] - s) / 60)
+        last_end = actual[hits[-1]][1]
+        if last_end < end - 60:  # an outage still going on has no end yet
+            ends.append((last_end - e) / 60)
+    # an outage inside any planned slot (also one not over yet) is not "unplanned"
+    planned_any = lambda a, b: any(a < e + tolerance and b > s - tolerance for s, e in slots)  # noqa: E731
+    unplanned = [actual[i] for i in range(len(actual)) if i not in used and actual[i][1] - actual[i][0] >= 600
+                 and not planned_any(*actual[i])]
+    mean = lambda xs: round(statistics.mean(xs)) if xs else None  # noqa: E731
+    return {
+        "planned": len(done), "happened": happened,
+        "start_delta_min": mean(starts), "end_delta_min": mean(ends),
+        "end_late_max_min": round(max(ends)) if ends else None,
+        "unplanned": len(unplanned), "unplanned_h": round(sum(b - a for a, b in unplanned) / 3600, 1),
+    }

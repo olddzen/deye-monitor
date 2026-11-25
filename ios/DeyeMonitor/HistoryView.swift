@@ -12,6 +12,9 @@ struct HistoryView: View {
                 if let stats = store.response?.data {
                     summary(stats.week)
                     dayButton
+                    if let acc = stats.schedule30 {
+                        ScheduleAccuracyCard(acc: acc)
+                    }
                     if let ins = stats.insights, ins.weekKwh != nil {
                         ConsumptionCard(insights: ins, tariff: stats.energy30?.tariff)
                     }

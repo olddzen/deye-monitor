@@ -6,7 +6,6 @@ struct ScheduleCard: View {
     let schedule: Schedule
     let live: Live?
     let stats: Stats?
-    @AppStorage("minSoc") private var minSoc = BatteryMath.defaultMinSoc
 
     var body: some View {
         let now = Date.now
@@ -42,13 +41,10 @@ struct ScheduleCard: View {
         } else if let cur = slots.first(where: { $0.contains(now) }) {
             line("bolt.slash.fill", "За графіком світла немає до \(endText(cur))",
                  "ще \(Fmt.duration(cur.end.timeIntervalSince(now)))")
-            batteryVerdict(for: cur.end.timeIntervalSince(now))
         } else if let next = (slots + tomorrowSlots).first(where: { $0.start > now }) {
             let isToday = slots.contains(next)
             line("clock.fill", "Наступне: \(isToday ? "" : "завтра ")\(Fmt.time(next.start))–\(endText(next))",
                  "через \(Fmt.duration(next.start.timeIntervalSince(now))) · триватиме \(Fmt.duration(next.duration))")
-            batteryVerdict(for: next.duration)
-            cycleHint(until: next.start, now: now)
         } else {
             line("checkmark.circle.fill", "Сьогодні більше відключень немає",
                  schedule.tomorrow?.applies == true ? "завтра без відключень" : schedule.tomorrow.map { "завтра: \($0.statusText)" })
@@ -65,48 +61,6 @@ struct ScheduleCard: View {
                 if let subtitle { Text(subtitle).font(.subheadline).foregroundStyle(.secondary) }
             }
         }
-    }
-
-    /// Will the battery cover an outage of this length at the current (or typical) load?
-    @ViewBuilder private func batteryVerdict(for duration: TimeInterval) -> some View {
-        let math = BatteryMath(live: live, stats: stats, minSoc: minSoc)
-        // the real current draw (battery discharge when off-grid, the flat's load otherwise)
-        let load = max(live?.load ?? 0, math.isDischarging ? math.powerW : 0)
-        if let h = math.hours(atLoad: load) {
-            let ok = h * 3600 >= duration
-            HStack(spacing: 8) {
-                Image(systemName: ok ? "battery.100percent" : "battery.25percent")
-                    .foregroundStyle(ok ? Theme.good : Theme.warning)
-                Text(ok ? "Батареї вистачить з запасом — ≈ \(Fmt.duration(h * 3600)) при \(Int(load)) Вт"
-                        : "Батареї вистачить лише на \(Fmt.duration(h * 3600)) при \(Int(load)) Вт — зекономте")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .padding(.leading, 36)
-        }
-    }
-
-    /// Which program appliances finish before the grid goes (so they don't run on the battery).
-    @ViewBuilder private func cycleHint(until start: Date, now: Date) -> some View {
-        let left = start.timeIntervalSince(now)
-        let cycles = Appliance.presets.filter { $0.cycleH != nil }
-        let fit = cycles.filter { ($0.cycleH ?? 0) * 3600 <= left }
-        let late = cycles.filter { ($0.cycleH ?? 0) * 3600 > left }
-        if left < 8 * 3600, !cycles.isEmpty {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: fit.isEmpty ? "hourglass.bottomhalf.filled" : "checkmark.circle")
-                    .foregroundStyle(fit.isEmpty ? Theme.warning : Theme.good)
-                Text(cycleText(fit: fit, late: late)).font(.footnote).foregroundStyle(.secondary)
-            }
-            .padding(.leading, 36)
-        }
-    }
-
-    private func cycleText(fit: [Appliance], late: [Appliance]) -> String {
-        let name = { (a: Appliance) in "\(a.name.lowercased()) (≈\(Fmt.short((a.cycleH ?? 0) * 3600)))" }
-        var parts: [String] = []
-        if !fit.isEmpty { parts.append("Встигне до відключення: " + fit.map(name).joined(separator: ", ")) }
-        if !late.isEmpty { parts.append((fit.isEmpty ? "Не встигне до відключення: " : "не встигне: ") + late.map(name).joined(separator: ", ")) }
-        return parts.joined(separator: " · ")
     }
 
     private func endText(_ i: DateInterval) -> String {

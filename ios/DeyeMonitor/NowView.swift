@@ -28,7 +28,9 @@ struct NowView: View {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 120)
                 }
                 if let stats {
-                    TodayCard(outages: stats.outages ?? [], accent: state.accent)
+                    if store.response?.schedule == nil {  // the schedule card already shows today, plan vs actual
+                        TodayCard(outages: stats.outages ?? [], accent: state.accent)
+                    }
                     WeekGlance(week: stats.week)
                 }
             }
@@ -166,12 +168,10 @@ private struct BatteryCard: View {
                 }
                 CapsuleMeter(fraction: soc / 100, tint: soc < 20 ? Theme.critical : soc < 40 ? Theme.warning : state.accent)
                 HStack {
-                    // same draw as the outage card: the larger of the flat's load and the battery discharge
-                    if math.isDischarging, let h = math.hours(atLoad: max(bp, live.load ?? 0)) {
-                        Label("вистачить ≈ \(Fmt.duration(h * 3600))", systemImage: "hourglass")
-                    } else if let h = math.hoursToFull {
+                    // off-grid the runtime lives in «Режим без світла» only
+                    if let h = math.hoursToFull {
                         Label("повна через \(Fmt.duration(h * 3600))", systemImage: "bolt.fill")
-                    } else if let h = math.hours(atLoad: live.load ?? 0) {
+                    } else if live.gridOn == true, let h = math.hours(atLoad: live.load ?? 0) {
                         Label("без світла вистачить ≈ \(Fmt.duration(h * 3600))", systemImage: "hourglass")
                     }
                     Spacer()

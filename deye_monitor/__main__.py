@@ -203,6 +203,24 @@ def publish_cache(cfg: Config, mon: Monitor) -> None:
         log.warning("cache upload failed: %s", type(exc).__name__)
 
 
+def collect_schedule(cfg: Config, db: Storage) -> None:
+    """Archive today's / tomorrow's YASNO plan (via the worker, which knows the group)."""
+    import requests
+    from datetime import datetime
+    try:
+        resp = requests.get(f"{cfg.worker_url}/schedule", headers={"X-Cache-Secret": cfg.cache_secret}, timeout=30)
+        sched = resp.json() if resp.status_code == 200 else None
+    except Exception as exc:
+        log.warning("schedule: %s", type(exc).__name__)
+        return
+    for d in ((sched or {}).get("today"), (sched or {}).get("tomorrow")):
+        if not d or d.get("status") != "ScheduleApplies" or not d.get("date"):
+            continue
+        start = datetime.fromisoformat(d["date"]).timestamp()
+        db.save_planned_day(d["date"][:10], d["status"], start,
+                            [(start + a * 60, start + b * 60) for a, b in d.get("off", [])], time.time())
+
+
 def collect_appliances(cfg: Config, db: Storage) -> None:
     """SmartThings appliance counters via the worker (it holds the OAuth tokens); history is kept here."""
     import requests
@@ -266,6 +284,7 @@ def once(cfg: Config) -> None:
     mon.save_state()
     maintenance(cfg, db, reader, tg, mon)
     if cfg.worker_url and cfg.cache_secret:
+        collect_schedule(cfg, db)
         collect_appliances(cfg, db)
         publish_cache(cfg, mon)
         publish_days(cfg, db)

@@ -80,6 +80,14 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/api/day") return dayData(request, env, url);
     if (request.method === "GET" && url.pathname === "/st/callback") return stCallback(env, url);
+    if (request.method === "GET" && url.pathname === "/schedule") {
+      // planned outages for the workflow, which archives them to measure how well the schedule holds
+      if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {
+        return new Response("forbidden", { status: 403 });
+      }
+      const sched = await schedule(env).catch(() => null);
+      return new Response(JSON.stringify(sched), { headers: { "Content-Type": "application/json" } });
+    }
     if (request.method === "GET" && url.pathname === "/st/snapshot") {
       // appliance snapshot for the GitHub workflow (history is kept there)
       if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {

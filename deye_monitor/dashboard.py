@@ -54,6 +54,17 @@ def daily(db: Storage, outages, now: float, tz: str, tariff: float, n_days: int 
     return rows
 
 
+def _schedule_accuracy(db: Storage, outages, now: float) -> Optional[dict]:
+    """Plan vs reality over the last 30 days — from the first day with an archived plan."""
+    days, slots = db.planned_between(now - 30 * DAY, now)
+    if not days:
+        return None
+    start = max(now - 30 * DAY, days[0]["start"])
+    acc = A.schedule_accuracy(slots, outages, start, now)
+    acc["since"] = start
+    return acc
+
+
 def build_data(db: Storage, cfg, now: float) -> dict:
     """Everything the dashboard draws, compact enough for one KV value (< 200 KB)."""
     tz = cfg.tz
@@ -112,6 +123,7 @@ def build_data(db: Storage, cfg, now: float) -> dict:
                      "standby_month_uah": _r(ins.standby_month_uah, 0),
                      "peak_hour": ins.peak_hour, "evening_share": _r(ins.evening_share * 100, 0)
                      if ins.evening_share is not None else None},
+        "schedule30": _schedule_accuracy(db, outs60, now),
         "appliances": A.appliance_stats(db.appliance_samples_between(now - 30 * DAY, now), now, tz),
         "alerts30": A.alert_counts(db.alerts_between(now - 30 * DAY, now), min_level=1),
     }

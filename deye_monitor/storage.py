@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS appliance_samples (
     ts INTEGER NOT NULL, device_id TEXT NOT NULL, label TEXT, kind TEXT, energy_wh REAL, delta_wh REAL,
     report_end REAL, is_on INTEGER, PRIMARY KEY (ts, device_id)
 );
+CREATE TABLE IF NOT EXISTS planned_days (day TEXT PRIMARY KEY, status TEXT, start_ts REAL, fetched_ts REAL);
+CREATE TABLE IF NOT EXISTS planned_slots (day TEXT NOT NULL, start_ts REAL NOT NULL, end_ts REAL NOT NULL,
+    PRIMARY KEY (day, start_ts));
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id TEXT PRIMARY KEY, name TEXT, level INTEGER, start_ts REAL, end_ts REAL
 );
@@ -154,6 +157,24 @@ class Storage:
                 [(int(ts), d["id"], d.get("label"), d.get("kind"), d.get("energyWh"), d.get("deltaWh"),
                   d.get("reportEnd"), int(bool(d.get("on")))) for d in devices if d.get("id")])
             self._db.commit()
+
+    def save_planned_day(self, day: str, status: str, start_ts: float, slots: List[Tuple[float, float]],
+                         fetched: float) -> None:
+        """Latest known plan for one day (replaces an earlier version of the same day)."""
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO planned_days VALUES (?, ?, ?, ?)", (day, status, start_ts, fetched))
+            self._db.execute("DELETE FROM planned_slots WHERE day = ?", (day,))
+            self._db.executemany("INSERT OR REPLACE INTO planned_slots VALUES (?, ?, ?)",
+                                 [(day, s, e) for s, e in slots])
+            self._db.commit()
+
+    def planned_between(self, start: float, end: float) -> Tuple[List[dict], List[Tuple[float, float]]]:
+        """(days with a published plan, planned slots) whose day starts in [start, end)."""
+        days = self._exec("SELECT day, status, start_ts FROM planned_days WHERE start_ts >= ? AND start_ts < ? "
+                          "ORDER BY start_ts", (start - 86400, end)).fetchall()
+        slots = self._exec("SELECT start_ts, end_ts FROM planned_slots WHERE end_ts > ? AND start_ts < ? "
+                           "ORDER BY start_ts", (start, end)).fetchall()
+        return ([{"day": d, "status": s, "start": t} for d, s, t in days], [(a, b) for a, b in slots])
 
     def appliance_samples_between(self, start: float, end: float) -> List[dict]:
         cur = self._exec("SELECT ts, device_id, label, kind, energy_wh, delta_wh, report_end, is_on "
