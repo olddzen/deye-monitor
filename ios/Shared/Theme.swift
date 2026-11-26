@@ -11,10 +11,8 @@ enum Theme {
     static let good = Color(hex: 0x0ca30c)
     static let warning = Color(hex: 0xfab219)
     static let critical = Color(hex: 0xd03b3b)
-    static let track = Color(light: 0xecebe7, dark: 0x2c2c2a)
     static let noData = Color(light: 0xe3e2dd, dark: 0x2a2a28)
     static let card = Color(light: 0xffffff, dark: 0x1a1a19)
-    static let page = Color(light: 0xf4f4f2, dark: 0x111110)
     static let tile = Color(light: 0xfcfcfb, dark: 0x1f1f1e)
     static let line = Color(light: 0xe6e5e0, dark: 0x2c2c2a)
     /// sequential blue, near-zero → max
@@ -24,11 +22,6 @@ enum Theme {
         Color(light: 0x256abf, dark: 0x3987e5), Color(light: 0x184f95, dark: 0x6da7ec),
         Color(light: 0x0d366b, dark: 0x9ec5f4),
     ]
-
-    static func batteryColor(_ soc: Double?) -> Color {
-        guard let soc else { return noData }
-        return soc < 20 ? critical : soc < 40 ? warning : good
-    }
 
     static func seqColor(_ share: Double) -> Color {
         guard share > 0 else { return noData }

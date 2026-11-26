@@ -125,6 +125,11 @@ struct Live: Decodable {
     let load: Double?
     let soc: Double?
     let batteryPower: Double?
+    /// What the battery really gives (+) / takes (−): off-grid the flat plus the inverter's own use,
+    /// because the power reading is noisy at low draw. Use this for display, not batteryPower.
+    let drawW: Double?
+    /// The inverter's own off-grid use the server measured (W).
+    let selfUseW: Double?
     let runtimeH: Double?
     let batteryTemp: Double?
     let inverterTemp: Double?

@@ -123,8 +123,9 @@ private struct MacPanel: View {
             HStack {
                 flow("bolt.fill", live?.gridOn == true ? "\(Int(live?.gridPower ?? 0)) Вт" : "немає", "мережа")
                 Spacer()
-                flow("battery.100percent", live?.batteryPower.map { abs($0) > 20 ? "\(Int(abs($0))) Вт" : "0 Вт" } ?? "—",
-                     (live?.batteryPower ?? 0) < -20 ? "заряд" : (live?.batteryPower ?? 0) > 20 ? "розряд" : "батарея")
+                let draw = live?.drawW ?? live?.batteryPower
+                flow("battery.100percent", draw.map { abs($0) > 20 ? "\(Int(abs($0))) Вт" : "0 Вт" } ?? "—",
+                     (draw ?? 0) < -20 ? "заряд" : (draw ?? 0) > 20 ? "розряд" : "батарея")
                 Spacer()
                 flow("house.fill", "\(Int(live?.load ?? 0)) Вт", "квартира")
             }

@@ -53,8 +53,8 @@ export default {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/telegram") {
       // Telegram sends the secret we registered with setWebhook; anything else is not Telegram.
-      if (request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_WEBHOOK_SECRET) {
-        return new Response("forbidden", { status: 403 });
+      if (!secretEq(env.TELEGRAM_WEBHOOK_SECRET, request.headers.get("X-Telegram-Bot-Api-Secret-Token"))) {
+        return forbidden();
       }
       const update = await request.json().catch(() => null);
       ctx.waitUntil(handleUpdate(update, env).catch((e) => console.log("update failed:", e && e.name)));
@@ -62,19 +62,18 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/cache") {
       // pre-rendered reports from the GitHub workflow
-      if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {
-        return new Response("forbidden", { status: 403 });
-      }
+      if (!cacheSecretOk(request, env)) return forbidden();
       const body = await request.text();
       if (body.length > 5_000_000) return new Response("too large", { status: 413 });
       await env.KV.put("reports", body);
+      // the live checks need one number from it every minute: keep it apart (no 200 KB parse per minute)
+      const m = /"self_use_w":\s*(\d+(?:\.\d+)?)/.exec(body);
+      if (m) await env.KV.put("self_use_w", m[1]);
       return new Response("stored");
     }
     if (request.method === "POST" && url.pathname === "/cache/days") {
       // per-day point archives for the app's day picker
-      if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {
-        return new Response("forbidden", { status: 403 });
-      }
+      if (!cacheSecretOk(request, env)) return forbidden();
       const body = await request.json().catch(() => null);
       const days = (body && body.days) || {};
       const keys = Object.keys(days).filter((k) => DAY_RE.test(k)).slice(0, 20);
@@ -87,19 +86,13 @@ export default {
     if (request.method === "GET" && url.pathname === "/st/callback") return stCallback(env, url);
     if (request.method === "GET" && url.pathname === "/schedule") {
       // planned outages for the workflow, which archives them to measure how well the schedule holds
-      if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {
-        return new Response("forbidden", { status: 403 });
-      }
-      const sched = await schedule(env).catch(() => null);
-      return new Response(JSON.stringify(sched), { headers: { "Content-Type": "application/json" } });
+      if (!cacheSecretOk(request, env)) return forbidden();
+      return jsonResponse(await schedule(env).catch(() => null));
     }
     if (request.method === "GET" && url.pathname === "/st/snapshot") {
       // appliance snapshot for the GitHub workflow (history is kept there)
-      if (!env.CACHE_SECRET || request.headers.get("X-Cache-Secret") !== env.CACHE_SECRET) {
-        return new Response("forbidden", { status: 403 });
-      }
-      const snap = await stSnapshot(env).catch((e) => ({ error: String(e.message || e.name) }));
-      return new Response(JSON.stringify(snap), { headers: { "Content-Type": "application/json" } });
+      if (!cacheSecretOk(request, env)) return forbidden();
+      return jsonResponse(await stSnapshot(env).catch((e) => ({ error: String(e.message || e.name) })));
     }
     if (request.method === "GET" && (url.pathname === "/app" || url.pathname === "/app/")) {
       return new Response(APP_HTML, { headers: { "Content-Type": "text/html; charset=utf-8",
@@ -114,6 +107,7 @@ export default {
     ctx.waitUntil(stKeepFresh(env).catch((e) => console.log("st refresh failed:", e && e.message)));
     if (new Date(event.scheduledTime).getUTCMinutes() % 5 === 0) {
       ctx.waitUntil(dispatchWorkflow(env, "").catch((e) => console.log("dispatch failed:", e && e.message)));
+      ctx.waitUntil(appExpiryReminder(env).catch((e) => console.log("expiry reminder failed:", e && e.message)));
     }
   },
 };
@@ -151,7 +145,7 @@ async function handleUpdate(update, env) {
     return sendMessage(env, "📊 Дашборд", { inline_keyboard: [[{ text: "Відкрити дашборд",
       web_app: { url: `https://${env.WORKER_HOST}/app` } }]] });
   }
-  if (cmd in REPORT_COMMANDS) {
+  if (Object.hasOwn(REPORT_COMMANDS, cmd)) {
     const cache = await env.KV.get("reports", "json").catch(() => null);
     const item = cache && cache.items && cache.items[cmd];
     const ageMin = cache ? (Date.now() / 1000 - cache.generated_at) / 60 : Infinity;
@@ -197,12 +191,7 @@ async function liveCheck(env) {
   const state = (await env.KV.get("live", "json")) || {};
   const save = () => env.KV.put("live", JSON.stringify(state));  // only on changes (KV write quota)
 
-  const latest = await deye(env, "/v1.0/device/latest", { deviceList: [sn] });
-  const dev = (latest.deviceDataList || [])[0] || {};
-  const p = {};
-  for (const item of dev.dataList || []) p[item.key] = item.value;
-  const num = (k) => (p[k] === undefined || p[k] === null || p[k] === "" ? null : Number(p[k]));
-  const updated = Number(dev.collectionTime) || 0;
+  const { num, updated } = await deyeLatest(env);
 
   // lost data: the stick stopped uploading (often: no power and no internet in the flat)
   const stale = !updated || nowSec - updated > STALE_MIN * 60;
@@ -212,7 +201,7 @@ async function liveCheck(env) {
     return sendMessage(env, `📵 Deye не отримує даних ${updated ? duration(nowSec - updated) : ""}\n` +
       "Найімовірніше, у квартирі немає світла і разом з ним інтернету, або стік втратив Wi-Fi.");
   }
-  if (stale) return scheduleAlerts(env, state, save, { nowSec, soc: null, load: null });
+  if (stale) return scheduleAlerts(env, state, save, { nowSec, soc: null, drawW: null });
   if (state.stale) {
     state.stale = false;
     await save();
@@ -222,9 +211,10 @@ async function liveCheck(env) {
   const voltage = num("GridVoltageL1L2");
   if (voltage === null) return;
   const gridOn = voltage >= GRID_MIN_V;
-  const socRaw = num("SOC");
-  const bmsTemp = num("Temperature- Battery");
-  const soc = socRaw === null || socRaw <= 0 || (bmsTemp !== null && bmsTemp <= -50) ? null : socRaw;
+  const { soc } = readBattery(num);
+  const load = num("TotalConsumptionPower");
+  const selfUse = await selfUseW(env);
+  const offGridDraw = Math.max(num("BatteryPower") || 0, (load || 0) + selfUse);
   const socText = soc === null ? "немає даних від BMS" : `${soc}%`;
 
   if (state.gridOn === undefined) {  // first run: remember silently
@@ -233,24 +223,24 @@ async function liveCheck(env) {
   }
   if (gridOn !== state.gridOn) {
     const was = state.since ? duration(updated - state.since) : null;
+    let text;
     if (gridOn) {
-      await sendMessage(env, `💡 <b>Світло дали</b> о ${clock(updated)}` +
-        (was ? `\nНе було: <b>${was}</b>` : "") + `\n🔋 Батарея: ${socText}` +
-        outageSummary(state, soc) + (await planDiff(env, state.since, updated)));
+      text = `💡 <b>Світло дали</b> о ${clock(updated)}` + (was ? `\nНе було: <b>${was}</b>` : "") +
+        `\n🔋 Батарея: ${socText}` + outageSummary(state, soc) + (await planDiff(env, state.since, updated));
     } else {
-      const load = num("TotalConsumptionPower");
-      const su = await selfUseW(env);
-      const h = runtimeHours(soc, (load || 0) + su);
-      await sendMessage(env, `🔌 <b>Світло вимкнули</b> о ${clock(updated)}` + (was ? `\nБуло: ${was}` : "") +
+      const h = runtimeHours(soc, (load || 0) + selfUse);
+      text = `🔌 <b>Світло вимкнули</b> о ${clock(updated)}` + (was ? `\nБуло: ${was}` : "") +
         `\n🔋 Батарея: ${socText} · навантаження ${load ?? "?"} Вт` +
         (h !== null ? `\n⏳ Вистачить ≈ ${duration(h * 3600)} (до ~${clock(updated + h * 3600)})` +
-                      `\n<i>з урахуванням ≈ ${su} Вт, які споживає сам інвертор</i>` : ""));
+                      `\n<i>з урахуванням ≈ ${selfUse} Вт, які споживає сам інвертор</i>` : "");
     }
-    await stOutageReminder(env, gridOn).catch((e) => console.log("st reminder failed:", e && e.message));
+    // state first: if a send fails, the next minute must not announce the same change again
     Object.assign(state, { gridOn, since: updated, socFired: [], etaFired: false, chgFired: false,
                            socOff: gridOn ? null : soc, socOn: gridOn ? soc : null,
                            fullArmed: gridOn && soc !== null && soc < 95, fullFrom: gridOn ? updated : null });
     await save();
+    await sendMessage(env, text);
+    await stOutageReminder(env, gridOn).catch((e) => console.log("st reminder failed:", e && e.message));
   }
 
   if (!gridOn && soc !== null) {
@@ -258,7 +248,7 @@ async function liveCheck(env) {
     const crossed = SOC_ALERTS.filter((l) => soc <= l && !fired.includes(l));
     if (crossed.length) {
       const lowest = Math.min(...crossed);
-      const hours = runtimeHours(soc, Math.max(num("BatteryPower") || 0, (num("TotalConsumptionPower") || 0) + await selfUseW(env)));
+      const hours = runtimeHours(soc, offGridDraw);
       await sendMessage(env, `🪫 Батарея ${soc}% (поріг ${lowest}%)` +
         (hours !== null ? `\nВистачить приблизно на ${duration(hours * 3600)} (до ~${clock(updated + hours * 3600)})` : ""));
       state.socFired = fired.concat(SOC_ALERTS.filter((x) => x >= lowest && !fired.includes(x)));
@@ -268,8 +258,7 @@ async function liveCheck(env) {
 
   // last hour of battery during an outage: one heads-up with what to switch off
   if (!gridOn && soc !== null && !state.etaFired) {
-    const load = num("TotalConsumptionPower");
-    const h = runtimeHours(soc, Math.max(num("BatteryPower") || 0, (load || 0) + await selfUseW(env)));
+    const h = runtimeHours(soc, offGridDraw);
     if (h !== null && h <= 1) {
       state.etaFired = true;
       await save();
@@ -298,20 +287,34 @@ async function liveCheck(env) {
   }
 
   await techAlerts(env, state, save, { gridOn, soc, updated, num });
-  await scheduleAlerts(env, state, save, { nowSec, soc, load: num("TotalConsumptionPower") });
+  // what the battery would give if the grid went down now: the flat plus the inverter itself
+  await scheduleAlerts(env, state, save, { nowSec, soc, drawW: load === null ? null : load + selfUse });
 
   // serious Deye alerts, checked every 5 minutes
-  if (new Date().getUTCMinutes() % 5 === 0) {
-    await checkDeyeAlerts(env, sn, nowSec);
-    await appExpiryReminder(env, state, save, nowSec);
-  }
+  if (new Date().getUTCMinutes() % 5 === 0) await checkDeyeAlerts(env, sn, nowSec);
 }
 
 /** The inverter's own off-grid draw, measured by the workflow from real SOC drops (median). */
 async function selfUseW(env) {
-  const cache = await env.KV.get("reports", "json").catch(() => null);
-  const w = cache && cache.data && cache.data.battery && cache.data.battery.self_use_w;
-  return Number.isFinite(w) && w > 0 ? Math.round(w) : DEFAULT_SELF_USE_W;
+  const w = Number(await env.KV.get("self_use_w").catch(() => null));
+  return Number.isFinite(w) && w > 0 && w <= 200 ? Math.round(w) : DEFAULT_SELF_USE_W;
+}
+
+/** Deye's latest snapshot as a lookup: num("SOC") → number or null; updated = collection time (s). */
+async function deyeLatest(env) {
+  const latest = await deye(env, "/v1.0/device/latest", { deviceList: [env.DEYE_CLOUD_DEVICE_SN] });
+  const dev = (latest.deviceDataList || [])[0] || {};
+  const p = {};
+  for (const item of dev.dataList || []) p[item.key] = item.value;
+  const num = (k) => (p[k] === undefined || p[k] === null || p[k] === "" ? null : Number(p[k]));
+  return { p, num, updated: Number(dev.collectionTime) || 0 };
+}
+
+/** A silent BMS reports SOC 0 and −100 °C: treat that as "no data", not as an empty battery. */
+function readBattery(num) {
+  const socRaw = num("SOC"), temp = num("Temperature- Battery");
+  const silent = socRaw === null || socRaw <= 0 || (temp !== null && temp <= -50);
+  return { silent, soc: silent ? null : socRaw, temp: silent ? null : temp };
 }
 
 /** "Витрачено 3% (≈ 0.35 кВт·год)" for the grid-back message. */
@@ -329,8 +332,11 @@ async function planDiff(env, start, end) {
   if (!t || t.status !== "ScheduleApplies") return "";
   const midnight = Date.parse(t.date) / 1000;
   const slot = t.off.find(([s, e]) => midnight + s * 60 < end && midnight + e * 60 > start);
-  if (!slot) return start >= midnight ? "\n📅 Поза графіком" : "";
   const delta = (sec) => Math.abs(sec) < 300 ? "вчасно" : `на ${duration(Math.abs(sec))} ${sec > 0 ? "пізніше" : "раніше"}`;
+  if (start < midnight) {  // went out yesterday: today's schedule only knows when it should come back
+    return slot && slot[0] === 0 ? `\n📅 За графіком до ${slotText(slot).split("–")[1]}: дали ${delta(end - (midnight + slot[1] * 60))}` : "";
+  }
+  if (!slot) return "\n📅 Поза графіком";
   return `\n📅 За графіком ${slotText(slot)}: вимкнули ${delta(start - (midnight + slot[0] * 60))}, ` +
          `дали ${delta(end - (midnight + slot[1] * 60))}`;
 }
@@ -371,14 +377,17 @@ async function techAlerts(env, state, save, { gridOn, soc, updated, num }) {
   }
 }
 
-/** The iPhone app is signed by a free Apple team: it stops opening 7 days after install. */
-async function appExpiryReminder(env, state, save, nowSec) {
+/** The iPhone app is signed by a free Apple team: it stops opening 7 days after install. The app
+ *  reports the date (X-App-Expires); a day ahead, in the daytime, the bot reminds once. */
+async function appExpiryReminder(env) {
+  const nowSec = Date.now() / 1000;
   const exp = Number(await env.KV.get("app_expires"));
-  if (!exp || state.expWarned === exp || nowSec > exp || exp - nowSec > 26 * 3600) return;
-  const hour = Number(new Date(nowSec * 1000).toLocaleString("en-GB", { timeZone: "Europe/Kyiv", hour: "2-digit", hour12: false }));
+  if (!exp || nowSec > exp || exp - nowSec > 26 * 3600) return;
+  if (Number(await env.KV.get("app_expires_warned")) === exp) return;
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Kyiv", hour: "2-digit", hour12: false })
+    .format(new Date(nowSec * 1000)));
   if (hour < 9 || hour >= 22) return;
-  state.expWarned = exp;
-  await save();
+  await env.KV.put("app_expires_warned", String(exp), { expirationTtl: 30 * 86400 });
   const when = new Intl.DateTimeFormat("uk-UA", { timeZone: "Europe/Kyiv", day: "numeric", month: "long",
                                                  hour: "2-digit", minute: "2-digit" }).format(new Date(exp * 1000));
   await sendMessage(env, `📱 <b>Застосунок «Світло» перестане відкриватись ${when}</b>\n` +
@@ -653,7 +662,7 @@ const slotText = ([s, e]) => `${hhmm(s)}–${e >= 1440 ? "24:00" : hhmm(e)}`;
 async function scheduleAlerts(env, state, save, ctx) {
   const sched = await schedule(env).catch(() => null);
   if (!sched) return;
-  const { nowSec, soc, load } = ctx;
+  const { nowSec, soc, drawW } = ctx;
   const g = esc(sched.group);
   for (const [which, d] of [["today", sched.today], ["tomorrow", sched.tomorrow]]) {
     if (!d || d.status !== "ScheduleApplies") continue;
@@ -674,20 +683,23 @@ async function scheduleAlerts(env, state, save, ctx) {
   const t = sched.today;
   if (!t || t.status !== "ScheduleApplies") return;
   const nowMin = (nowSec * 1000 - Date.parse(t.date)) / 60000;
-  const next = t.off.find(([s]) => s - nowMin > 0 && s - nowMin <= SCHEDULE_REMIND_MIN);
+  const tm = sched.tomorrow && sched.tomorrow.status === "ScheduleApplies" ? sched.tomorrow.off : [];
+  const slots = t.off.concat(tm.map(([s, e]) => [s + 1440, e + 1440]));
+  const next = slots.find(([s]) => s - nowMin > 0 && s - nowMin <= SCHEDULE_REMIND_MIN);
   const remindKey = next && `${t.date}|${next[0]}`;
   if (next && state.schedReminded !== remindKey) {
     state.schedReminded = remindKey;
     await save();
     const outageH = (next[1] - next[0]) / 60;
-    const h = runtimeHours(soc, load === null ? null : load + await selfUseW(env));
+    const h = runtimeHours(soc, drawW);
     let battery = "";
     if (soc !== null) {
       battery = `\n🔋 Батарея ${soc}%` + (h === null ? "" : h >= outageH
-        ? ` — при ${load} Вт вистачить на ${duration(h * 3600)}, з запасом`
-        : ` — при ${load} Вт вистачить лише на ${duration(h * 3600)}, менше за відключення`);
+        ? ` — при ${Math.round(drawW)} Вт вистачить на ${duration(h * 3600)}, з запасом`
+        : ` — при ${Math.round(drawW)} Вт вистачить лише на ${duration(h * 3600)}, менше за відключення`);
     }
-    await sendMessage(env, `⏰ <b>О ${hhmm(next[0])} відключення за графіком</b> до ${next[1] >= 1440 ? "24:00" : hhmm(next[1])}` +
+    const [from, to] = slotText(next[0] >= 1440 ? [next[0] - 1440, next[1] - 1440] : next).split("–");
+    await sendMessage(env, `⏰ <b>О ${from} відключення за графіком</b> до ${to}` +
       ` (${duration(outageH * 3600)})${battery}`);
   }
 }
@@ -696,18 +708,13 @@ async function scheduleAlerts(env, state, save, ctx) {
 async function liveData(env) {
   const sn = env.DEYE_CLOUD_DEVICE_SN;
   const nowSec = Date.now() / 1000;
-  const [latest, history] = await Promise.all([
-    deye(env, "/v1.0/device/latest", { deviceList: [sn] }),
+  const [{ p, num, updated: collected }, history] = await Promise.all([
+    deyeLatest(env),
     deye(env, "/v1.0/device/historyRaw", { deviceSn: sn, measurePoints: ["GridVoltageL1L2"],
                                            startTimestamp: Math.floor(nowSec - 86400),
                                            endTimestamp: Math.floor(nowSec) }).catch(() => null),
   ]);
-  const dev = (latest.deviceDataList || [])[0] || {};
-  const p = {};
-  for (const item of dev.dataList || []) p[item.key] = item.value;
-  const num = (k) => (p[k] === undefined || p[k] === null || p[k] === "" ? null : Number(p[k]));
-
-  const updated = Number(dev.collectionTime) || null;
+  const updated = collected || null;
   const voltage = num("GridVoltageL1L2");
   const gridOn = voltage !== null && voltage >= GRID_MIN_V;
 
@@ -722,20 +729,18 @@ async function liveData(env) {
     if (i < 0) beyondDay = true;
     else since = (pts[i].t + pts[i + 1].t) / 2;
   }
-  const socRaw = num("SOC");
-  const bmsTemp = num("Temperature- Battery");
-  const bmsSilent = socRaw === null || socRaw <= 0 || (bmsTemp !== null && bmsTemp <= -50);
+  const { silent: bmsSilent, soc, temp: batteryTemp } = readBattery(num);
   const batteryPower = bmsSilent ? null : num("BatteryPower") || 0;
-  const soc = bmsSilent ? null : socRaw;
   // off-grid the battery really gives the flat's load plus the inverter's own use (the power reading is noisy)
-  const draw = gridOn ? batteryPower : Math.max(batteryPower || 0, (num("TotalConsumptionPower") || 0) + await selfUseW(env));
-  const runtimeH = soc !== null && draw > 50 ? Math.max(0, ((soc - CUTOFF_SOC) / 100) * BATTERY_WH / draw) : null;
+  const selfUse = await selfUseW(env);
+  const drawW = bmsSilent ? null : gridOn ? batteryPower : Math.max(batteryPower, (num("TotalConsumptionPower") || 0) + selfUse);
+  const runtimeH = runtimeHours(soc, drawW);
   return {
     now: nowSec, updated, stale: !updated || nowSec - updated > STALE_MIN * 60,
     gridOn, since, beyondDay, voltage, freq: num("GridFrequency"),
     gridPower: num("TotalGridPower"), load: num("TotalConsumptionPower"),
-    soc, batteryPower, runtimeH,
-    batteryTemp: bmsSilent ? null : bmsTemp, inverterTemp: num("DC Temperature"),
+    soc, batteryPower, drawW, selfUseW: selfUse, runtimeH,
+    batteryTemp, inverterTemp: num("DC Temperature"),
     relay: p.GridRelayStatus || null,
     // detailed battery / energy points for the app's battery screen
     battery: {
@@ -811,10 +816,7 @@ async function verifyInitData(initData, env) {
     await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]), enc.encode(msg)));
   const secret = await hmac(enc.encode("WebAppData"), env.TELEGRAM_BOT_TOKEN);
   const sig = [...(await hmac(secret, check))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  if (sig.length !== hash.length) return false;
-  let diff = 0;
-  for (let i = 0; i < sig.length; i++) diff |= sig.charCodeAt(i) ^ hash.charCodeAt(i);
-  if (diff) return false;
+  if (!secretEq(sig, hash)) return false;
   const authDate = Number(params.get("auth_date"));
   if (!authDate || Date.now() / 1000 - authDate > 86400) return false;
   let user = null;
@@ -825,18 +827,16 @@ async function verifyInitData(initData, env) {
 // The iOS app has no Telegram signature: it sends a long random APP_TOKEN instead.
 function appTokenOk(request, env) {
   const auth = request.headers.get("Authorization") || "";
-  const given = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  const want = env.APP_TOKEN || "";
-  if (!want || given.length !== want.length) return false;
-  let diff = 0;
-  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ given.charCodeAt(i);
-  return diff === 0;
+  return secretEq(env.APP_TOKEN, auth.startsWith("Bearer ") ? auth.slice(7) : "");
+}
+
+/** The iOS app (APP_TOKEN) or the owner inside the Telegram Mini App (signed initData). */
+async function ownerOk(request, env) {
+  return appTokenOk(request, env) || verifyInitData(request.headers.get("X-Telegram-Init-Data"), env);
 }
 
 async function dashboardData(request, env) {
-  if (!appTokenOk(request, env) && !(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
-    return new Response("forbidden", { status: 403 });
-  }
+  if (!(await ownerOk(request, env))) return forbidden();
   const exp = Number(request.headers.get("X-App-Expires"));
   if (exp > 1.7e9 && exp < 2.2e9 && String(Math.round(exp)) !== (await env.KV.get("app_expires"))) {
     await env.KV.put("app_expires", String(Math.round(exp)));
@@ -847,22 +847,32 @@ async function dashboardData(request, env) {
     schedule(env).catch(() => null),
     stSnapshot(env).catch(() => null),
   ]);
-  return new Response(JSON.stringify({ live, data: cache && cache.data, generated_at: cache && cache.generated_at,
-                                       schedule: sched, appliances }), {
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-  });
+  return jsonResponse({ live, data: cache && cache.data, generated_at: cache && cache.generated_at,
+                        schedule: sched, appliances }, { "Cache-Control": "no-store" });
 }
 
 async function dayData(request, env, url) {
-  if (!appTokenOk(request, env) && !(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
-    return new Response("forbidden", { status: 403 });
-  }
+  if (!(await ownerOk(request, env))) return forbidden();
   const day = url.searchParams.get("date") || "";
   if (!DAY_RE.test(day)) return new Response("bad date", { status: 400 });
   const body = await env.KV.get(`day:${day}`);
   if (!body) return new Response("no data", { status: 404 });
   return new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "private, max-age=300" } });
 }
+
+// ---------------------------------------------------------------- small helpers
+/** Constant-time string comparison; an unset secret never matches. */
+function secretEq(want, given) {
+  want = String(want || ""); given = String(given || "");
+  if (!want || want.length !== given.length) return false;
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ given.charCodeAt(i);
+  return diff === 0;
+}
+const cacheSecretOk = (request, env) => secretEq(env.CACHE_SECRET, request.headers.get("X-Cache-Secret"));
+const forbidden = () => new Response("forbidden", { status: 403 });
+const jsonResponse = (obj, headers = {}) =>
+  new Response(JSON.stringify(obj), { headers: { "Content-Type": "application/json", ...headers } });
 
 // ---------------------------------------------------------------- formatting
 function duration(seconds) {

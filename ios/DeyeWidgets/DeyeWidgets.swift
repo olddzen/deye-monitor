@@ -282,7 +282,7 @@ struct PowerWidgetView: View {
 
     private var batteryMode: String {
         let bp = live?.batteryPower ?? 0
-        if live?.gridOn == false && bp > 0 { return "розряд \(Int(bp)) Вт" }
+        if live?.gridOn == false, live?.soc != nil { return "розряд ≈ \(Int(live?.drawW ?? bp)) Вт" }
         if bp < -20 { return (live?.soc ?? 0) >= 99 ? "повна" : "заряд \(Int(-bp)) Вт" }
         if bp > 20 { return "розряд \(Int(bp)) Вт" }
         return "у спокої"
@@ -293,7 +293,7 @@ struct PowerWidgetView: View {
         let gridOn = live?.gridOn == true
         let items: [(String, String, String)] = [
             ("bolt.fill", gridOn ? "\(Int(live?.gridPower ?? 0)) Вт" : "немає", "мережа"),
-            ("battery.75percent", live?.soc == nil ? "—" : "\(Int(abs(live?.batteryPower ?? 0))) Вт", "батарея"),
+            ("battery.75percent", live?.soc == nil ? "—" : "\(Int(abs(live?.drawW ?? live?.batteryPower ?? 0))) Вт", "батарея"),
             ("house.fill", "\(Int(live?.load ?? 0)) Вт", "квартира"),
         ]
         return HStack(spacing: compact ? 8 : 0) {
@@ -327,7 +327,7 @@ struct PowerWidgetView: View {
                 return family == .systemMedium && day.status == "WaitingForSchedule" ? "ще немає" : day.statusText
             }
             return planned.isEmpty ? "без відключень"
-                : planned.map { "\(Fmt.time($0.start))–\(Fmt.kyivCalendar.component(.hour, from: $0.end) == 0 ? "24:00" : Fmt.time($0.end))" }
+                : planned.map(Fmt.slot)
                     .joined(separator: ", ")
         }()
         return VStack(alignment: .leading, spacing: 4) {

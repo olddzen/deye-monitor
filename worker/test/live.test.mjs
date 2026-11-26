@@ -182,7 +182,9 @@ await run(1);
 assert.match(stAuthCalls.at(-1), /grant_type=refresh_token&refresh_token=str1/);
 
 // honest runtime, outage summary, tech alerts, app expiry
-kv.set("reports", JSON.stringify({ data: { battery: { self_use_w: 40 } } }));
+r = await worker.fetch(req("/cache", JSON.stringify({ generated_at: Date.now() / 1000, items: {},
+  data: { battery: { self_use_w: 40 } } }), { "X-Cache-Secret": "c" }), env, { waitUntil() {} });
+assert.equal(kv.get("self_use_w"), "40");                                       // extracted on upload
 stPlugOn = "off";
 const last = (re) => sent.filter((m) => re.test(m)).at(-1) || "";
 const at = (t, patch) => { Object.assign(deyeNow, patch, { t }); return run(1); };
@@ -214,4 +216,31 @@ const res = await worker.fetch(new Request("https://w/api/data", { headers: { Au
                                { ...env, APP_TOKEN: "app" }, { waitUntil() {} });
 assert.equal(res.status, 200);
 assert.ok(kv.get("app_expires"));
+const body = await res.json();      // grid on here: the draw is the measured battery power
+assert.equal(body.live.selfUseW, 40); assert.equal(body.live.drawW, body.live.batteryPower);
+Object.assign(deyeNow, { v: 0, bp: 20, load: 60 });   // off-grid: flat + inverter, not the noisy 20 W
+const off = await (await worker.fetch(new Request("https://w/api/data", { headers: { Authorization: "Bearer app" } }),
+                                      { ...env, APP_TOKEN: "app" }, { waitUntil() {} })).json();
+assert.equal(off.live.drawW, 100); assert.ok(off.live.runtimeH > 0);
+Object.assign(deyeNow, { v: 231 });
+// "/constructor" is not a report command: help, no workflow run
+const d0 = dispatched, cTasks = [];
+await worker.fetch(req("/telegram", JSON.stringify({ message: { chat: { id: 1 }, text: "/constructor" } }),
+  { "X-Telegram-Bot-Api-Secret-Token": "w" }), env, { waitUntil: (p) => cTasks.push(p) });
+await Promise.all(cTasks);
+assert.equal(dispatched, d0); assert.match(sent.at(-1), /^Команди:/);
+// wrong webhook secret is refused
+r = await worker.fetch(req("/telegram", "{}", { "X-Telegram-Bot-Api-Secret-Token": "x" }), env, { waitUntil() {} });
+assert.equal(r.status, 403);
+// outage that began yesterday: only the planned end is compared
+if (nowMin + 15 < 1440) {
+  yasno["9.1"].today = day(midnight, [{ start: 0, end: nowMin + 15, type: "Definite" }]);
+  const st = JSON.parse(kv.get("live"));
+  Object.assign(st, { gridOn: false, since: midnight.getTime() / 1000 - 3600, socOff: 90 });
+  kv.set("live", JSON.stringify(st));
+  await tick({ v: 231, soc: 88, dc: 40 });
+  const msg = last(/Світло дали/);
+  assert.match(msg, /За графіком до \d\d:\d\d: дали на 1[45] хв раніше/);   // nowMin is floored
+  assert.match(msg, /Витрачено: 2%/);
+}
 console.log("worker tests passed:", sent.length, "messages");

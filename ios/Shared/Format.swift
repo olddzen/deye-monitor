@@ -53,6 +53,15 @@ enum Fmt {
         return wdm.string(from: date) + " " + time(date)
     }
     private static let wdm = dateFormatter("EE, d MMM")
+
+    /// End of a planned slot: a slot that runs to midnight reads "24:00", not "00:00".
+    static func slotEnd(_ i: DateInterval) -> String {
+        kyivCalendar.component(.hour, from: i.end) == 0 && kyivCalendar.component(.minute, from: i.end) == 0
+            && i.duration > 60 ? "24:00" : time(i.end)
+    }
+
+    /// "19:00–24:00"
+    static func slot(_ i: DateInterval) -> String { "\(time(i.start))–\(slotEnd(i))" }
     static func dayMonth(_ date: Date) -> String { dm.string(from: date) }
 
     /// How old the inverter data is: "щойно", "4 хв тому", "1 год 10 хв тому".

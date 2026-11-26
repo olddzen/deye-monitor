@@ -165,7 +165,11 @@ private struct BatteryCard: View {
                         Text(bp < -20 ? (soc >= 99 ? "повна · підтримується" : "заряджається")
                              : math.isDischarging ? "розряджається" : "у спокої")
                             .font(.subheadline.weight(.medium))
-                        if abs(bp) > 20 || math.isDischarging { Text("\(Int(abs(bp))) Вт").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+                        if math.offGrid {
+                            Text("≈ \(Int(math.realDraw(flatLoad: live.load ?? 0))) Вт").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        } else if abs(bp) > 20 || math.isDischarging {
+                            Text("\(Int(abs(bp))) Вт").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        }
                     }
                 }
                 CapsuleMeter(fraction: soc / 100, tint: soc < 20 ? Theme.critical : soc < 40 ? Theme.warning : state.accent)

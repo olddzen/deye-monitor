@@ -57,6 +57,7 @@ struct APIClient {
         live["gridPower"] = 0
         live["load"] = 640
         live["batteryPower"] = 660
+        live["drawW"] = 660
         live["since"] = Date.now.timeIntervalSince1970 - 2400
         live["stale"] = false
         root["live"] = live

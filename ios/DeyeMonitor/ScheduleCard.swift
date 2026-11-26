@@ -35,11 +35,11 @@ struct ScheduleCard: View {
         if let today, !today.applies {
             line("calendar.badge.clock", today.statusText.capitalizedFirst, nil)
         } else if let cur = slots.first(where: { $0.contains(now) }) {
-            line("bolt.slash.fill", "За графіком світла немає до \(endText(cur))",
+            line("bolt.slash.fill", "За графіком світла немає до \(Fmt.slotEnd(cur))",
                  "ще \(Fmt.duration(cur.end.timeIntervalSince(now)))")
         } else if let next = (slots + tomorrowSlots).first(where: { $0.start > now }) {
             let isToday = slots.contains(next)
-            line("clock.fill", "Наступне: \(isToday ? "" : "завтра ")\(Fmt.time(next.start))–\(endText(next))",
+            line("clock.fill", "Наступне: \(isToday ? "" : "завтра ")\(Fmt.slot(next))",
                  "через \(Fmt.duration(next.start.timeIntervalSince(now))) · триватиме \(Fmt.duration(next.duration))")
         } else {
             line("checkmark.circle.fill", "Сьогодні більше відключень немає",
@@ -59,9 +59,6 @@ struct ScheduleCard: View {
         }
     }
 
-    private func endText(_ i: DateInterval) -> String {
-        Fmt.kyivCalendar.component(.hour, from: i.end) == 0 && i.end > i.start.addingTimeInterval(60) ? "24:00" : Fmt.time(i.end)
-    }
 
     private func actualToday(now: Date) -> [DateInterval] {
         let start = Fmt.kyivCalendar.startOfDay(for: now)
@@ -101,7 +98,7 @@ private struct DayBar: View {
                 } else if day.intervals.isEmpty {
                     Text("без відключень").font(.caption.weight(.semibold)).foregroundStyle(Theme.good)
                 } else {
-                    Text("план: " + day.intervals.map { "\(Fmt.time($0.start))–\(endText($0))" }.joined(separator: ", "))
+                    Text("план: " + day.intervals.map { Fmt.slot($0) }.joined(separator: ", "))
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
@@ -109,7 +106,7 @@ private struct DayBar: View {
                 lane("план", start: start, isToday: isToday) { x in
                     ForEach(day.intervals, id: \.start) { i in
                         block(x: x, i, fill: Theme.critical.opacity(0.22), stroke: Theme.critical.opacity(0.7), dashed: true,
-                              label: "\(Fmt.time(i.start))–\(endText(i))")
+                              label: Fmt.slot(i))
                     }
                 }
                 if showsActual {
@@ -194,9 +191,6 @@ private struct DayBar: View {
         }
     }
 
-    private func endText(_ i: DateInterval) -> String {
-        Fmt.kyivCalendar.component(.hour, from: i.end) == 0 && i.end > i.start.addingTimeInterval(60) ? "24:00" : Fmt.time(i.end)
-    }
 }
 
 private extension String {

@@ -101,7 +101,7 @@ def overview_png(points: Sequence[dict], outages: Sequence[Outage], profile: Seq
         lx.axvspan(to_dt(s), to_dt(e), color=OFF, alpha=0.13, lw=0)
     lxs, lys = _series(points, "load_power", to_dt)
     if lxs:
-        top = _nice(max((y for y in lys if y == y), default=1))
+        top = _nice(max((y for y in lys if not math.isnan(y)), default=1))
         lx.plot(lxs, lys, color=SERIES, lw=1.4)
         lx.set_ylim(0, top)
         lx.set_yticks([0, top / 2, top])

@@ -1,11 +1,10 @@
 """Regression tests for the review fixes."""
 from deye_monitor import analytics as A
 from deye_monitor.cloud import CloudReader, seal, unseal
-from deye_monitor.monitor import Monitor
 from deye_monitor.storage import Storage
 from deye_monitor.telegram import Telegram
 from tests.test_cloud import FakeClient
-from tests.test_monitor import cfg, make, reading
+from tests.test_monitor import make, reading
 
 
 def pt(ts, v):

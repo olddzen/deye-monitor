@@ -142,8 +142,8 @@ class OutageBattery:
 
 def battery_per_outage(points: Sequence[dict], outages: Sequence[Outage], now: float) -> List[OutageBattery]:
     res = []
-    for s, e in outages:
-        e = e if e is not None else now
+    for s, end in outages:
+        e = end if end is not None else now
         inside = [p for p in points if s - 360 <= p["ts"] <= e + 60]
         if len(inside) < 2:
             continue

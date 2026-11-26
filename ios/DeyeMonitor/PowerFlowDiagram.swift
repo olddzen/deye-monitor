@@ -5,6 +5,7 @@ import SwiftUI
 /// grid the inverter feeds the flat from the battery. Soft pulses travel in the direction of power.
 struct PowerFlowCard: View {
     let live: Live
+    private var selfUseW: Double { live.selfUseW ?? BatteryMath.defaultSelfUseW }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -32,7 +33,8 @@ private extension PowerFlowCard {
                 "Інвертор \(battery)" + (own > 5 ? " — це ще ≈ \(own) Вт з мережі." : ".")
         }
         if live.soc == nil { return "Світла немає, даних від батареї теж." }
-        return "Світла немає: інвертор живить квартиру від батареї (\(Int(max(bp, 0))) Вт)."
+        let draw = Int(live.drawW ?? max(Double(load) + selfUseW, bp))
+        return "Світла немає: батарея віддає ≈ \(draw) Вт — квартира \(load) Вт і сам інвертор ≈ \(Int(selfUseW)) Вт."
     }
 }
 
@@ -107,7 +109,9 @@ struct PowerFlowDiagram: View {
     private var batteryCaption: String {
         guard live.soc != nil else { return "Батарея" }
         if bp < -20 { return "заряд \(Int(-bp)) Вт" }
-        if bp > 20 || (!gridOn && bp > 0) { return "розряд \(Int(bp)) Вт" }
+        // off-grid the power reading is noisy at low draw: what really leaves is the flat plus the inverter
+        if !gridOn { return "розряд ≈ \(Int(live.drawW ?? bp)) Вт" }
+        if bp > 20 { return "розряд \(Int(bp)) Вт" }
         return "Батарея"
     }
 

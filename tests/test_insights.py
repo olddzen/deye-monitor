@@ -1,5 +1,4 @@
 import tempfile
-import time
 import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -43,8 +42,6 @@ class DayArchiveTest(unittest.TestCase):
     def test_day_detail_and_publish_list(self):
         zone = ZoneInfo(TZ)
         d0 = datetime(2026, 11, 20, tzinfo=zone).timestamp()
-        for p in pts(d0, 288):
-            pass
         self.db.upsert_points(pts(d0, 288))
         d = day_detail(self.db, "2026-11-20", TZ, 4.32, 180, d0 + 2 * 86400)
         self.assertEqual(len(d["points"]), 288)

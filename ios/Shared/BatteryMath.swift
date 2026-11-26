@@ -26,7 +26,7 @@ struct BatteryMath {
         healthKwh = stats?.battery?.capacityKwh
         self.minSoc = minSoc
         offGrid = live?.gridOn == false
-        selfUseW = stats?.battery?.selfUseW ?? Self.defaultSelfUseW
+        selfUseW = live?.selfUseW ?? stats?.battery?.selfUseW ?? Self.defaultSelfUseW
     }
 
     /// Best estimate of what the pack holds when full.
