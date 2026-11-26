@@ -103,7 +103,7 @@ struct BatteryDetailView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Metric(value: "\(Int(m.powerW))", unit: "Вт", size: 36)
                     Spacer()
-                    if let h = m.hours(atLoad: m.powerW) {
+                    if let h = m.hours(flatLoad: live?.load ?? 0) {
                         VStack(alignment: .trailing, spacing: 1) {
                             Text("вистачить на").font(.caption).foregroundStyle(.secondary)
                             Text(Fmt.duration(h * 3600)).font(.display(20)).monospacedDigit()

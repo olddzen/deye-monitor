@@ -17,7 +17,9 @@ globalThis.fetch = async (url, init = {}) => {
   if (url.includes("/device/latest")) return json({ success: true, deviceDataList: [{ collectionTime: deyeNow.t,
     dataList: [{ key: "GridVoltageL1L2", value: String(deyeNow.v) }, { key: "SOC", value: String(deyeNow.soc) },
                { key: "Temperature- Battery", value: String(deyeNow.temp) }, { key: "BatteryPower", value: String(deyeNow.bp) },
-               { key: "TotalConsumptionPower", value: "300" }] }] });
+               { key: "TotalConsumptionPower", value: String(deyeNow.load ?? 300) },
+               ...[["ChargeCurrentLimit", deyeNow.lim], ["DC Temperature", deyeNow.dc], ["TotalGridPower", deyeNow.gp]]
+                 .filter(([, v]) => v !== undefined).map(([key, v]) => ({ key, value: String(v) }))] }] });
   if (url.includes("app.yasno.ua")) return json(yasno);
   if (url.includes("auth-global.api.smartthings.com")) {
     stAuthCalls.push(String(init.body)); return json({ access_token: "sta", refresh_token: "str" + stAuthCalls.length, expires_in: 86399 });
@@ -178,4 +180,38 @@ assert.equal(stCommands.length, 1);                                            /
 kv.set("st_auth", JSON.stringify({ access: "old", refresh: "str1", until: Date.now() + 60000 }));
 await run(1);
 assert.match(stAuthCalls.at(-1), /grant_type=refresh_token&refresh_token=str1/);
+
+// honest runtime, outage summary, tech alerts, app expiry
+kv.set("reports", JSON.stringify({ data: { battery: { self_use_w: 40 } } }));
+stPlugOn = "off";
+const last = (re) => sent.filter((m) => re.test(m)).at(-1) || "";
+const at = (t, patch) => { Object.assign(deyeNow, patch, { t }); return run(1); };
+const T0 = Date.now() / 1000;
+await at(T0, { v: 231, soc: 99, bp: 0, load: 300 });
+await at(T0 + 60, { v: 0, soc: 99, bp: 50, load: 60 });
+assert.match(last(/Світло вимкнули/), /Світло вимкнули[\s\S]*≈ 40 Вт, які споживає сам інвертор/);
+await at(T0 + 5 * 3600, { v: 231, soc: 96, bp: 0, load: 60 });
+assert.match(last(/Світло дали/), /Світло дали[\s\S]*Витрачено: 3% \(≈ 0,35 кВт·год\)/);
+// grid back, BMS says 0 A: nothing for the first hour, then one alert
+await at(T0 + 5 * 3600 + 1800, { v: 231, soc: 96, lim: 0 });
+assert.ok(!sent.at(-1).includes("не заряджається"));
+await at(T0 + 6 * 3600 + 120, { v: 231, soc: 96, lim: 0 });
+assert.match(sent.at(-1), /а батарея не заряджається[\s\S]*ліміт струму 0 А/);
+await at(T0 + 6 * 3600 + 180, { v: 231, soc: 96, lim: 0 });
+assert.equal(sent.filter((m) => m.includes("не заряджається")).length, 1);
+// near the grid relay limit, with a 30-minute cooldown
+await at(T0 + 7 * 3600, { v: 231, soc: 96, lim: 230, gp: 7200, load: 7000 });
+assert.match(sent.at(-1), /З мережі йде 7,2 кВт[\s\S]*вступний автомат/);
+await at(T0 + 7 * 3600 + 600, { gp: 7300 });
+assert.equal(sent.filter((m) => m.includes("З мережі йде")).length, 1);
+// inverter hot: once, re-armed after cooling down
+await at(T0 + 8 * 3600, { gp: 300, load: 300, dc: 70 });
+assert.match(sent.at(-1), /Інвертор нагрівся до 70°/);
+await at(T0 + 8 * 3600 + 60, { dc: 71 });
+assert.equal(sent.filter((m) => m.includes("нагрівся")).length, 1);
+// app expiry: the app reports it, the cron reminds once within a day of it
+const res = await worker.fetch(new Request("https://w/api/data", { headers: { Authorization: "Bearer app", "X-App-Expires": String(Math.round(Date.now() / 1000 + 20 * 3600)) } }),
+                               { ...env, APP_TOKEN: "app" }, { waitUntil() {} });
+assert.equal(res.status, 200);
+assert.ok(kv.get("app_expires"));
 console.log("worker tests passed:", sent.length, "messages");

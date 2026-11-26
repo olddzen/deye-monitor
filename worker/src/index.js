@@ -23,6 +23,11 @@ const SOC_ALERTS = [30, 15];
 const BATTERY_WH = 11800, CUTOFF_SOC = 10;
 const V_HIGH = 250, V_LOW = 200, V_OK = [205, 245];  // grid voltage alert band with hysteresis
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Deye single-phase LV hybrid: 6 kW from the battery; the grid relay passes ~35 A (≈ 8 kW).
+const INVERTER_W = 6000, BYPASS_W = 8000, NEAR_LIMIT = 0.85, PEAK_COOLDOWN_S = 1800;
+const DEFAULT_SELF_USE_W = 35;          // inverter's own draw off-grid until the workflow measures it
+const HOT_C = 65, HOT_OK_C = 55;        // inverter heatsink
+const NOT_CHARGING_MIN = 60;            // grid back this long and the battery still isn't charging
 // Planned outage schedule (YASNO / DTEK Kyiv). The group is a secret: YASNO_GROUP, e.g. "12.1".
 const YASNO_URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns";
 const SCHEDULE_REMIND_MIN = 30;
@@ -230,16 +235,20 @@ async function liveCheck(env) {
     const was = state.since ? duration(updated - state.since) : null;
     if (gridOn) {
       await sendMessage(env, `💡 <b>Світло дали</b> о ${clock(updated)}` +
-        (was ? `\nНе було: <b>${was}</b>` : "") + `\n🔋 Батарея: ${socText}`);
+        (was ? `\nНе було: <b>${was}</b>` : "") + `\n🔋 Батарея: ${socText}` +
+        outageSummary(state, soc) + (await planDiff(env, state.since, updated)));
     } else {
       const load = num("TotalConsumptionPower");
-      const h = runtimeHours(soc, load);
+      const su = await selfUseW(env);
+      const h = runtimeHours(soc, (load || 0) + su);
       await sendMessage(env, `🔌 <b>Світло вимкнули</b> о ${clock(updated)}` + (was ? `\nБуло: ${was}` : "") +
         `\n🔋 Батарея: ${socText} · навантаження ${load ?? "?"} Вт` +
-        (h !== null ? `\n⏳ Вистачить ≈ ${duration(h * 3600)} (до ~${clock(updated + h * 3600)})` : ""));
+        (h !== null ? `\n⏳ Вистачить ≈ ${duration(h * 3600)} (до ~${clock(updated + h * 3600)})` +
+                      `\n<i>з урахуванням ≈ ${su} Вт, які споживає сам інвертор</i>` : ""));
     }
     await stOutageReminder(env, gridOn).catch((e) => console.log("st reminder failed:", e && e.message));
-    Object.assign(state, { gridOn, since: updated, socFired: [], etaFired: false,
+    Object.assign(state, { gridOn, since: updated, socFired: [], etaFired: false, chgFired: false,
+                           socOff: gridOn ? null : soc, socOn: gridOn ? soc : null,
                            fullArmed: gridOn && soc !== null && soc < 95, fullFrom: gridOn ? updated : null });
     await save();
   }
@@ -249,7 +258,7 @@ async function liveCheck(env) {
     const crossed = SOC_ALERTS.filter((l) => soc <= l && !fired.includes(l));
     if (crossed.length) {
       const lowest = Math.min(...crossed);
-      const hours = runtimeHours(soc, num("BatteryPower"));
+      const hours = runtimeHours(soc, Math.max(num("BatteryPower") || 0, (num("TotalConsumptionPower") || 0) + await selfUseW(env)));
       await sendMessage(env, `🪫 Батарея ${soc}% (поріг ${lowest}%)` +
         (hours !== null ? `\nВистачить приблизно на ${duration(hours * 3600)} (до ~${clock(updated + hours * 3600)})` : ""));
       state.socFired = fired.concat(SOC_ALERTS.filter((x) => x >= lowest && !fired.includes(x)));
@@ -260,7 +269,7 @@ async function liveCheck(env) {
   // last hour of battery during an outage: one heads-up with what to switch off
   if (!gridOn && soc !== null && !state.etaFired) {
     const load = num("TotalConsumptionPower");
-    const h = runtimeHours(soc, num("BatteryPower") > 50 ? num("BatteryPower") : load);
+    const h = runtimeHours(soc, Math.max(num("BatteryPower") || 0, (load || 0) + await selfUseW(env)));
     if (h !== null && h <= 1) {
       state.etaFired = true;
       await save();
@@ -288,10 +297,92 @@ async function liveCheck(env) {
     await save();
   }
 
+  await techAlerts(env, state, save, { gridOn, soc, updated, num });
   await scheduleAlerts(env, state, save, { nowSec, soc, load: num("TotalConsumptionPower") });
 
   // serious Deye alerts, checked every 5 minutes
-  if (new Date().getUTCMinutes() % 5 === 0) await checkDeyeAlerts(env, sn, nowSec);
+  if (new Date().getUTCMinutes() % 5 === 0) {
+    await checkDeyeAlerts(env, sn, nowSec);
+    await appExpiryReminder(env, state, save, nowSec);
+  }
+}
+
+/** The inverter's own off-grid draw, measured by the workflow from real SOC drops (median). */
+async function selfUseW(env) {
+  const cache = await env.KV.get("reports", "json").catch(() => null);
+  const w = cache && cache.data && cache.data.battery && cache.data.battery.self_use_w;
+  return Number.isFinite(w) && w > 0 ? Math.round(w) : DEFAULT_SELF_USE_W;
+}
+
+/** "Витрачено 3% (≈ 0.35 кВт·год)" for the grid-back message. */
+function outageSummary(state, soc) {
+  if (soc === null || state.socOff === null || state.socOff === undefined) return "";
+  const used = Math.max(0, state.socOff - soc);
+  return `\n📉 Витрачено: ${used}% (≈ ${(used / 100 * BATTERY_WH / 1000).toFixed(2).replace(".", ",")} кВт·год)`;
+}
+
+/** How the outage matched the YASNO schedule: "за графіком 19:00–24:00 · вимкнули на 34 хв пізніше". */
+async function planDiff(env, start, end) {
+  if (!start) return "";
+  const sched = await schedule(env).catch(() => null);
+  const t = sched && sched.today;
+  if (!t || t.status !== "ScheduleApplies") return "";
+  const midnight = Date.parse(t.date) / 1000;
+  const slot = t.off.find(([s, e]) => midnight + s * 60 < end && midnight + e * 60 > start);
+  if (!slot) return start >= midnight ? "\n📅 Поза графіком" : "";
+  const delta = (sec) => Math.abs(sec) < 300 ? "вчасно" : `на ${duration(Math.abs(sec))} ${sec > 0 ? "пізніше" : "раніше"}`;
+  return `\n📅 За графіком ${slotText(slot)}: вимкнули ${delta(start - (midnight + slot[0] * 60))}, ` +
+         `дали ${delta(end - (midnight + slot[1] * 60))}`;
+}
+
+/** Battery not charging with the grid back, load near the inverter's limits, inverter too hot. */
+async function techAlerts(env, state, save, { gridOn, soc, updated, num }) {
+  // 1) grid is back for an hour and the battery isn't taking charge
+  const limitA = num("ChargeCurrentLimit");
+  const onMin = state.since ? (updated - state.since) / 60 : 0;
+  if (gridOn && soc !== null && soc < 97 && onMin >= NOT_CHARGING_MIN && !state.chgFired &&
+      (limitA === 0 || (state.socOn !== null && state.socOn !== undefined && soc <= state.socOn))) {
+    state.chgFired = true;
+    await save();
+    await sendMessage(env, `🔋❗️ <b>Світло є вже ${duration(onMin * 60)}, а батарея не заряджається</b>\nЗаряд ${soc}%` +
+      (limitA === 0 ? "\nБатарея (BMS) сама заборонила заряд — ліміт струму 0 А. Якщо так триматиметься й далі, варто показати установнику."
+                    : "\nЗаряд не виріс з моменту появи світла. Перевірте налаштування заряду від мережі в Deye."));
+  }
+  // 2) close to the power limit
+  const load = num("TotalConsumptionPower") || 0, grid = num("TotalGridPower") || 0;
+  const draw = gridOn ? Math.max(grid, load) : load, limit = gridOn ? BYPASS_W : INVERTER_W;
+  if (draw >= NEAR_LIMIT * limit && !(state.peakAt && updated - state.peakAt < PEAK_COOLDOWN_S)) {
+    state.peakAt = updated;
+    await save();
+    const kw = (draw / 1000).toFixed(1).replace(".", ",");
+    await sendMessage(env, gridOn
+      ? `⚠️ <b>З мережі йде ${kw} кВт</b> — близько до межі ~8 кВт, яку інвертор пропускає з мережі.\nЯкщо триматиметься довго, може вибити вступний автомат. Вимкніть щось потужне.`
+      : `⚠️ <b>Навантаження ${kw} кВт</b> — близько до межі інвертора 6 кВт.\nВін може вимкнути живлення квартири. Вимкніть щось потужне (бойлер, духовку, обігрівач).`);
+  }
+  // 3) inverter heatsink too hot
+  const dc = num("DC Temperature");
+  if (dc !== null && dc >= HOT_C && !state.hot) {
+    state.hot = true;
+    await save();
+    await sendMessage(env, `🌡 <b>Інвертор нагрівся до ${Math.round(dc)}°</b>\nНорма до ${HOT_C}°. Перевірте, чи нічого не закриває вентиляцію, і зменшіть навантаження.`);
+  } else if (state.hot && dc !== null && dc < HOT_OK_C) {
+    state.hot = false;
+    await save();
+  }
+}
+
+/** The iPhone app is signed by a free Apple team: it stops opening 7 days after install. */
+async function appExpiryReminder(env, state, save, nowSec) {
+  const exp = Number(await env.KV.get("app_expires"));
+  if (!exp || state.expWarned === exp || nowSec > exp || exp - nowSec > 26 * 3600) return;
+  const hour = Number(new Date(nowSec * 1000).toLocaleString("en-GB", { timeZone: "Europe/Kyiv", hour: "2-digit", hour12: false }));
+  if (hour < 9 || hour >= 22) return;
+  state.expWarned = exp;
+  await save();
+  const when = new Intl.DateTimeFormat("uk-UA", { timeZone: "Europe/Kyiv", day: "numeric", month: "long",
+                                                 hour: "2-digit", minute: "2-digit" }).format(new Date(exp * 1000));
+  await sendMessage(env, `📱 <b>Застосунок «Світло» перестане відкриватись ${when}</b>\n` +
+    "Безкоштовний підпис Apple діє лише 7 днів — застосунок треба перезібрати й встановити знову.");
 }
 
 /** Hours until the cut-off at a given draw in watts, or null when unknown / not discharging. */
@@ -589,7 +680,7 @@ async function scheduleAlerts(env, state, save, ctx) {
     state.schedReminded = remindKey;
     await save();
     const outageH = (next[1] - next[0]) / 60;
-    const h = runtimeHours(soc, load);
+    const h = runtimeHours(soc, load === null ? null : load + await selfUseW(env));
     let battery = "";
     if (soc !== null) {
       battery = `\n🔋 Батарея ${soc}%` + (h === null ? "" : h >= outageH
@@ -636,7 +727,9 @@ async function liveData(env) {
   const bmsSilent = socRaw === null || socRaw <= 0 || (bmsTemp !== null && bmsTemp <= -50);
   const batteryPower = bmsSilent ? null : num("BatteryPower") || 0;
   const soc = bmsSilent ? null : socRaw;
-  const runtimeH = soc !== null && batteryPower > 50 ? Math.max(0, ((soc - 10) / 100) * 11800 / batteryPower) : null;
+  // off-grid the battery really gives the flat's load plus the inverter's own use (the power reading is noisy)
+  const draw = gridOn ? batteryPower : Math.max(batteryPower || 0, (num("TotalConsumptionPower") || 0) + await selfUseW(env));
+  const runtimeH = soc !== null && draw > 50 ? Math.max(0, ((soc - CUTOFF_SOC) / 100) * BATTERY_WH / draw) : null;
   return {
     now: nowSec, updated, stale: !updated || nowSec - updated > STALE_MIN * 60,
     gridOn, since, beyondDay, voltage, freq: num("GridFrequency"),
@@ -743,6 +836,10 @@ function appTokenOk(request, env) {
 async function dashboardData(request, env) {
   if (!appTokenOk(request, env) && !(await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env))) {
     return new Response("forbidden", { status: 403 });
+  }
+  const exp = Number(request.headers.get("X-App-Expires"));
+  if (exp > 1.7e9 && exp < 2.2e9 && String(Math.round(exp)) !== (await env.KV.get("app_expires"))) {
+    await env.KV.put("app_expires", String(Math.round(exp)));
   }
   const [live, cache, sched, appliances] = await Promise.all([
     liveData(env).catch((e) => ({ error: String(e.message || e.name) })),

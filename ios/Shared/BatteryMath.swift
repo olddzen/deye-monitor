@@ -14,6 +14,9 @@ struct BatteryMath {
     let minSoc: Double
     /// Off-grid the battery is the only source, so any discharge counts (no idle threshold).
     let offGrid: Bool
+    /// What the inverter itself burns off-grid, measured from real SOC drops (35 W until measured).
+    let selfUseW: Double
+    static let defaultSelfUseW = 35.0
 
     init(live: Live?, stats: Stats?, minSoc: Double) {
         soc = live?.soc
@@ -23,6 +26,7 @@ struct BatteryMath {
         healthKwh = stats?.battery?.capacityKwh
         self.minSoc = minSoc
         offGrid = live?.gridOn == false
+        selfUseW = stats?.battery?.selfUseW ?? Self.defaultSelfUseW
     }
 
     /// Best estimate of what the pack holds when full.
@@ -37,6 +41,13 @@ struct BatteryMath {
         guard let usable = usableKwh, watts > 1 else { return nil }
         return usable * 1000 / watts
     }
+
+    /// What the battery really gives off-grid for a given flat load: the load plus the inverter's own use.
+    /// The battery-power reading is noisy at low currents, so it only wins when it's clearly higher.
+    func realDraw(flatLoad: Double) -> Double { max(flatLoad + selfUseW, isDischarging ? powerW : 0) }
+
+    /// Hours until the cut-off if the grid went down with this flat load.
+    func hours(flatLoad: Double) -> Double? { hours(atLoad: realDraw(flatLoad: flatLoad)) }
 
     /// Hours to 100 % at the current charge power.
     var hoursToFull: Double? {

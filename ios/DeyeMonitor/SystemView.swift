@@ -10,6 +10,9 @@ struct SystemView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Система").font(.display(34, .bold)).padding(.top, 8)
+                if let live = store.response?.live, live.updated != nil {
+                    TechStatusCard(live: live)
+                }
                 if let s = store.response?.data {
                     battery(s.battery)
                     HStack(spacing: 12) {
@@ -96,6 +99,10 @@ struct SystemView: View {
         VStack(alignment: .leading, spacing: 4) {
             if let u = store.response?.live?.updatedDate { Text("живі дані Deye на \(Fmt.time(u))") }
             if let g = store.response?.generatedAt { Text("статистика на \(Fmt.time(Date(timeIntervalSince1970: g)))") }
+            if let exp = AppSignature.expires {
+                Text("застосунок відкриватиметься до \(Fmt.until(exp))")
+                    .foregroundStyle(exp.timeIntervalSinceNow < 2 * 86400 ? Theme.warning : Color.secondary)
+            }
             if let e = store.error { Text(e).foregroundStyle(Theme.critical) }
         }
         .font(.caption).foregroundStyle(.tertiary)

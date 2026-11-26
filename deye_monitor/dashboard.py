@@ -78,6 +78,7 @@ def build_data(db: Storage, cfg, now: float) -> dict:
     per = A.battery_per_outage(db.points_between(now - 60 * DAY, now), outs60, now)
     bat = A.battery_stats(pts30, per, cfg.battery_kwh, cfg.battery_cutoff_soc)
     en = A.energy_stats(pts30, cfg.tariff_uah, tz)
+    drain = A.real_drain(per, bat.capacity_kwh or cfg.battery_kwh)
     gq = A.grid_quality(pts30, cfg.grid_voltage_min)
     coverage = sum(1 for p in pts30 if p.get("soc") is not None) / max(len(pts30), 1)
     prev_cov = len(db.points_between(now - 14 * DAY, now - 7 * DAY)) / (7 * DAY / 300)
@@ -109,7 +110,9 @@ def build_data(db: Storage, cfg, now: float) -> dict:
                     "cycles_total": _r(bat.cycles_total, 2), "discharged_30d": _r(bat.discharged_kwh),
                     "temp_max": _r(bat.temp_max, 0), "inverter_temp_max": _r(bat.inverter_temp_max, 0),
                     "coverage": _r(coverage * 100, 0), "typical_load_w": _r(bat.typical_load_w, 0),
-                    "cutoff_soc": cfg.battery_cutoff_soc},
+                    "cutoff_soc": cfg.battery_cutoff_soc,
+                    "drain_w": _r(drain.drain_w, 0), "drain_load_w": _r(drain.load_w, 0),
+                    "self_use_w": _r(drain.self_use_w, 0), "drain_samples": drain.samples},
         "energy30": {"load_kwh": _r(en.load_kwh), "import_kwh": _r(en.import_kwh),
                      "cost_uah": _r(en.cost_uah, 0), "tariff": cfg.tariff_uah,
                      "base_load_w": _r(en.base_load_w, 0)},
@@ -125,6 +128,7 @@ def build_data(db: Storage, cfg, now: float) -> dict:
                      if ins.evening_share is not None else None},
         "schedule30": _schedule_accuracy(db, outs60, now),
         "appliances": A.appliance_stats(db.appliance_samples_between(now - 30 * DAY, now), now, tz),
+        "peaks30": A.power_peaks(pts30, now - 30 * DAY, now, tz, cfg.grid_voltage_min),
         "alerts30": A.alert_counts(db.alerts_between(now - 30 * DAY, now), min_level=1),
     }
 

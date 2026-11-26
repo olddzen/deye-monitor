@@ -173,7 +173,7 @@ private struct BatteryCard: View {
                     // off-grid the runtime lives in «Режим без світла» only
                     if let h = math.hoursToFull {
                         Label("повна через \(Fmt.duration(h * 3600))", systemImage: "bolt.fill")
-                    } else if live.gridOn == true, let h = math.hours(atLoad: live.load ?? 0) {
+                    } else if live.gridOn == true, let h = math.hours(flatLoad: live.load ?? 0) {
                         Label("без світла вистачить ≈ \(Fmt.duration(h * 3600))", systemImage: "hourglass")
                     }
                     Spacer()

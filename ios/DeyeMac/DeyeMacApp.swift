@@ -180,9 +180,9 @@ private struct MacPanel: View {
 
     private func batteryLine(_ m: BatteryMath, live: Live?) -> String {
         if m.soc == nil { return "немає даних від BMS" }
-        if m.isDischarging, let h = m.hours(atLoad: m.powerW) { return "розряд · вистачить ≈ \(Fmt.duration(h * 3600))" }
+        if m.isDischarging, let h = m.hours(flatLoad: live?.load ?? 0) { return "розряд · вистачить ≈ \(Fmt.duration(h * 3600))" }
         if let h = m.hoursToFull { return "заряд · повна через \(Fmt.duration(h * 3600))" }
-        if let h = m.hours(atLoad: live?.load ?? 0) { return "без світла вистачить ≈ \(Fmt.duration(h * 3600))" }
+        if let h = m.hours(flatLoad: live?.load ?? 0) { return "без світла вистачить ≈ \(Fmt.duration(h * 3600))" }
         return ""
     }
 

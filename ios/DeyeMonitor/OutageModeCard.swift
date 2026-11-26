@@ -9,8 +9,9 @@ struct OutageModeCard: View {
     @AppStorage("minSoc") private var minSoc = BatteryMath.defaultMinSoc
 
     private var math: BatteryMath { BatteryMath(live: live, stats: stats, minSoc: minSoc) }
-    /// What the battery feeds right now (load, or battery power when the inverter reports it higher).
-    private var drawW: Double { max(live.load ?? 0, math.isDischarging ? math.powerW : 0) }
+    /// What the battery really gives: the flat plus the inverter's own use.
+    private var drawW: Double { math.realDraw(flatLoad: live.load ?? 0) }
+    private var measured: Bool { (stats?.battery?.drainSamples ?? 0) > 0 }
 
     var body: some View {
         let now = Date.now
@@ -31,7 +32,10 @@ struct OutageModeCard: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 VStack(spacing: 10) {
-                    row("house.fill", "Навантаження зараз", "\(Int(drawW)) Вт")
+                    row("house.fill", "Квартира зараз", "\(Int(live.load ?? 0)) Вт")
+                    row("cpu", "Інвертор сам", "≈ \(Int(math.selfUseW)) Вт",
+                        note: measured ? "виміряно за \(stats?.battery?.drainSamples ?? 0) відкл." : "оцінка, уточниться")
+                    row("battery.50percent", "Батарея віддає", "≈ \(Int(drawW)) Вт")
                     if let usable = math.usableKwh {
                         row("battery.75percent", "Доступно в батареї", "\(Fmt.number(usable)) кВт·год",
                             note: "\(Int(math.soc ?? 0))% → \(Int(minSoc))%")

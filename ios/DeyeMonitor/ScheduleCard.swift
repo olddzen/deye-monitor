@@ -17,14 +17,10 @@ struct ScheduleCard: View {
             }
             headline(now: now)
             if let today = schedule.today {
-                DayBar(title: "Сьогодні", day: today, actual: actualToday(now: now), now: now)
+                DayBar(title: "Сьогодні", day: today, actual: actualToday(now: now), now: now, showsActual: true)
             }
             if let tomorrow = schedule.tomorrow {
                 DayBar(title: "Завтра", day: tomorrow, actual: [], now: now)
-            }
-            HStack(spacing: 14) {
-                legend(Theme.critical.opacity(0.25), "за графіком", dashed: true)
-                legend(Theme.critical, "фактично", dashed: false)
             }
         }
         .glassCard()
@@ -69,21 +65,17 @@ struct ScheduleCard: View {
 
     private func actualToday(now: Date) -> [DateInterval] {
         let start = Fmt.kyivCalendar.startOfDay(for: now)
-        return (stats?.outages ?? []).compactMap { o in
+        var list = (stats?.outages ?? []).compactMap { o -> DateInterval? in
             let s = max(o.startDate, start), e = min(o.endDate ?? now, now)
             return e > s ? DateInterval(start: s, end: e) : nil
         }
-    }
-
-    private func legend(_ color: Color, _ text: String, dashed: Bool) -> some View {
-        HStack(spacing: 5) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(color)
-                .overlay(RoundedRectangle(cornerRadius: 2)
-                    .strokeBorder(Theme.critical.opacity(dashed ? 0.6 : 0), style: StrokeStyle(lineWidth: 1, dash: [2, 2])))
-                .frame(width: 14, height: 8)
-            Text(text).font(.caption2).foregroundStyle(.secondary)
+        // The live feed knows about a fresh outage minutes before the 5-minute history does.
+        if let live, live.gridOn == false, let since = live.sinceDate,
+           !list.contains(where: { abs($0.start.timeIntervalSince(max(since, start))) < 600 }) {
+            let s = max(since, start)
+            if now > s { list.append(DateInterval(start: s, end: now)) }
         }
+        return list.sorted { $0.start < $1.start }
     }
 }
 
@@ -92,52 +84,118 @@ private struct DayBar: View {
     let day: ScheduleDay
     let actual: [DateInterval]
     let now: Date
+    /// Today shows a second lane with what really happened; tomorrow only has the plan.
+    var showsActual = false
+
+    private let laneLabel: CGFloat = 34
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.caption.weight(.semibold))
+        let start = day.start ?? Fmt.kyivCalendar.startOfDay(for: now)
+        let isToday = (start...start.addingTimeInterval(86400)).contains(now)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(day.applies ? (day.intervals.isEmpty ? "без відключень" : summary) : day.statusText)
-                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            }
-            GeometryReader { geo in
-                let w = geo.size.width
-                let start = day.start ?? Fmt.kyivCalendar.startOfDay(for: now)
-                let x = { (d: Date) in CGFloat(min(max(d.timeIntervalSince(start) / 86400, 0), 1)) * w }
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 5).fill(.primary.opacity(day.applies ? 0.06 : 0.03))
-                    ForEach(day.intervals, id: \.start) { i in
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(Theme.critical.opacity(0.18))
-                            .overlay(RoundedRectangle(cornerRadius: 5)
-                                .strokeBorder(Theme.critical.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
-                            .frame(width: max(4, x(i.end) - x(i.start)))
-                            .offset(x: x(i.start))
-                    }
-                    ForEach(actual, id: \.start) { i in
-                        Capsule().fill(Theme.critical)
-                            .frame(width: max(3, x(i.end) - x(i.start)), height: 6)
-                            .offset(x: x(i.start))
-                    }
-                    if (start...start.addingTimeInterval(86400)).contains(now) {
-                        Capsule().fill(.primary).frame(width: 2, height: 22).offset(x: x(now) - 1)
-                    }
+                if !day.applies {
+                    Text(day.statusText).font(.caption).foregroundStyle(.secondary)
+                } else if day.intervals.isEmpty {
+                    Text("без відключень").font(.caption.weight(.semibold)).foregroundStyle(Theme.good)
+                } else {
+                    Text("план: " + day.intervals.map { "\(Fmt.time($0.start))–\(endText($0))" }.joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
-            .frame(height: 18)
-            HStack {
-                ForEach(["00", "06", "12", "18", "24"], id: \.self) { h in
-                    Text(h).font(.caption2).foregroundStyle(.tertiary)
-                    if h != "24" { Spacer() }
+            if day.applies {
+                lane("план", start: start, isToday: isToday) { x in
+                    ForEach(day.intervals, id: \.start) { i in
+                        block(x: x, i, fill: Theme.critical.opacity(0.22), stroke: Theme.critical.opacity(0.7), dashed: true,
+                              label: "\(Fmt.time(i.start))–\(endText(i))")
+                    }
+                }
+                if showsActual {
+                    lane("факт", start: start, isToday: isToday) { x in
+                        ForEach(actual, id: \.start) { i in
+                            block(x: x, i, fill: Theme.critical, stroke: .clear, dashed: false,
+                                  label: Fmt.time(i.start), labelColor: .white)
+                        }
+                    }
+                }
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: laneLabel)
+                    ForEach(["00", "06", "12", "18", "24"], id: \.self) { h in
+                        Text(h).font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
+                        if h != "24" { Spacer() }
+                    }
+                }
+                if showsActual {
+                    factLine
                 }
             }
         }
     }
 
-    private var summary: String {
-        day.intervals.map { "\(Fmt.time($0.start))–\(Fmt.kyivCalendar.component(.hour, from: $0.end) == 0 ? "24:00" : Fmt.time($0.end))" }
-            .joined(separator: ", ")
+    /// One 24-hour lane with a label on the left and a "now" line when it is today.
+    private func lane<Content: View>(_ label: String, start: Date, isToday: Bool,
+                                     @ViewBuilder content: @escaping (@escaping (Date) -> CGFloat) -> Content) -> some View {
+        HStack(spacing: 0) {
+            Text(label).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .frame(width: laneLabel, alignment: .leading)
+            GeometryReader { geo in
+                let w = geo.size.width
+                let x = { (d: Date) in CGFloat(min(max(d.timeIntervalSince(start) / 86400, 0), 1)) * w }
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6).fill(.primary.opacity(0.07))
+                    // Hour grid every 3 hours so a block's edges can be read at a glance.
+                    ForEach(1..<8) { k in
+                        Rectangle().fill(.primary.opacity(k % 2 == 0 ? 0.14 : 0.07))
+                            .frame(width: 1).offset(x: w * CGFloat(k) / 8)
+                    }
+                    content(x)
+                    if isToday {
+                        Capsule().fill(.primary).frame(width: 2.5).padding(.vertical, -3).offset(x: x(now) - 1.25)
+                    }
+                }
+            }
+            .frame(height: 24)
+        }
+    }
+
+    private func block(x: (Date) -> CGFloat, _ i: DateInterval, fill: Color, stroke: Color, dashed: Bool,
+                       label: String, labelColor: Color = .primary) -> some View {
+        let width = max(4, x(i.end) - x(i.start))
+        return RoundedRectangle(cornerRadius: 6)
+            .fill(fill)
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(stroke, style: StrokeStyle(lineWidth: 1.2, dash: dashed ? [4, 2] : [])))
+            .overlay(alignment: .leading) {
+                if width > 70 {
+                    Text(label).font(.caption2.weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(labelColor).lineLimit(1).padding(.leading, 6)
+                }
+            }
+            .frame(width: width)
+            .offset(x: x(i.start))
+    }
+
+    /// Exact times of what really happened today, e.g. "10:02–14:55 · 19:34–зараз".
+    @ViewBuilder private var factLine: some View {
+        if actual.isEmpty {
+            Text("Сьогодні світло не вимикали").font(.caption).foregroundStyle(.secondary)
+        } else {
+            let parts = actual.map { i -> String in
+                let ongoing = i.end >= now.addingTimeInterval(-60)
+                return "\(Fmt.time(i.start))–\(ongoing ? "зараз" : Fmt.time(i.end))"
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "bolt.slash.fill").font(.caption2).foregroundStyle(Theme.critical)
+                Text("Фактично без світла: " + parts.joined(separator: ", "))
+                    .font(.caption.weight(.medium)).monospacedDigit()
+            }
+        }
+    }
+
+    private func endText(_ i: DateInterval) -> String {
+        Fmt.kyivCalendar.component(.hour, from: i.end) == 0 && i.end > i.start.addingTimeInterval(60) ? "24:00" : Fmt.time(i.end)
     }
 }
 

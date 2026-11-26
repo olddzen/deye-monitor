@@ -396,3 +396,67 @@ def schedule_accuracy(slots: Sequence[Tuple[float, float]], outages: Sequence[Ou
         "end_late_max_min": round(max(ends)) if ends else None,
         "unplanned": len(unplanned), "unplanned_h": round(sum(b - a for a, b in unplanned) / 3600, 1),
     }
+
+
+# ---------------- real battery drain & power peaks ----------------
+INVERTER_W = 6000.0   # what the inverter can give from the battery
+BYPASS_W = 8000.0     # roughly what its grid relay passes through (35 A)
+NEAR_LIMIT = 0.85
+
+
+@dataclass
+class RealDrain:
+    drain_w: Optional[float]        # what the battery really gave, from the SOC drop
+    load_w: Optional[float]         # what the flat used meanwhile
+    self_use_w: Optional[float]     # the difference: the inverter's own consumption (and losses)
+    samples: int
+
+
+def real_drain(per_outage: Sequence[OutageBattery], capacity_kwh: float,
+               min_hours: float = 1.5, min_drop: float = 2.0) -> RealDrain:
+    """Median of outages long enough for the 1 % SOC steps to mean something."""
+    drains, loads, selfs = [], [], []
+    for o in per_outage:
+        hours = (o.end - o.start) / 3600
+        if o.soc_start is None or o.soc_min is None or o.avg_load_w is None or hours < min_hours:
+            continue
+        drop = o.soc_start - o.soc_min
+        if drop < min_drop:
+            continue
+        w = drop / 100 * capacity_kwh * 1000 / hours
+        drains.append(w)
+        loads.append(o.avg_load_w)
+        selfs.append(min(max(w - o.avg_load_w, 0.0), 200.0))
+    if not drains:
+        return RealDrain(None, None, None, 0)
+    return RealDrain(statistics.median(drains), statistics.median(loads), statistics.median(selfs), len(drains))
+
+
+def power_peaks(points: Sequence[dict], start: float, end: float, tz: str, threshold: float) -> dict:
+    """Biggest draw per day and how often it came close to a limit (6 kW from the battery,
+    ~8 kW through the grid relay). Deye samples every ~5 min, so short spikes slip through."""
+    zone = ZoneInfo(tz)
+    days: Dict[str, list] = {}
+    near, top = 0, None
+    for p in points:
+        if not (start <= p["ts"] <= end):
+            continue
+        load = p.get("load_power") or 0
+        grid = p.get("grid_power") or 0
+        on = (p.get("grid_voltage") or 0) >= threshold
+        draw, limit = (max(grid, load), BYPASS_W) if on else (load, INVERTER_W)
+        day = datetime.fromtimestamp(p["ts"], zone).strftime("%Y-%m-%d")
+        d = days.setdefault(day, [day, 0.0, None, False])
+        if draw > d[1]:
+            d[1], d[2] = draw, p["ts"]
+        if draw >= NEAR_LIMIT * limit:
+            near += 1
+            d[3] = True
+        if top is None or draw > top[0]:
+            top = (draw, p["ts"], on)
+    return {
+        "days": [[d[0], round(d[1]), d[2], d[3]] for d in sorted(days.values())],
+        "max_w": round(top[0]) if top else None, "max_ts": top[1] if top else None,
+        "max_on_grid": top[2] if top else None,
+        "near_limit": near, "inverter_w": INVERTER_W, "bypass_w": BYPASS_W,
+    }

@@ -34,6 +34,9 @@ struct APIClient {
               let url = URL(string: base + path) else { throw APIError.notConfigured }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let exp = AppSignature.expires {   // the bot reminds a day before the app stops opening
+            req.setValue(String(Int(exp.timeIntervalSince1970)), forHTTPHeaderField: "X-App-Expires")
+        }
         let (data, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code == 403 { throw APIError.unauthorized }
@@ -59,4 +62,18 @@ struct APIClient {
         root["live"] = live
         return (try? JSONSerialization.data(withJSONObject: root)) ?? data
     }
+}
+
+/// When the provisioning profile the app was installed with runs out (free Apple teams: 7 days).
+/// Nil on the simulator, in the App Store build, or if the profile can't be read.
+enum AppSignature {
+    static let expires: Date? = {
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .isoLatin1),
+              let key = text.range(of: "<key>ExpirationDate</key>"),
+              let open = text.range(of: "<date>", range: key.upperBound..<text.endIndex),
+              let close = text.range(of: "</date>", range: open.upperBound..<text.endIndex) else { return nil }
+        return ISO8601DateFormatter().date(from: String(text[open.upperBound..<close.lowerBound]))
+    }()
 }

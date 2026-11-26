@@ -132,6 +132,7 @@ struct Live: Decodable {
     let battery: BatteryLive?
     let today: TodayLive?
     let acTemp: Double?
+    let relay: String?
 
     var isStale: Bool { stale ?? (updated == nil) }
     var sinceDate: Date? { since.map { Date(timeIntervalSince1970: $0) } }
@@ -224,10 +225,16 @@ struct BatteryStats: Decodable {
     let inverterTempMax: Double?
     let coverage: Double?
     let typicalLoadW: Double?
+    /// Real off-grid drain from SOC drops, the flat's share of it, and the inverter's own use (median).
+    let drainW: Double?
+    let drainLoadW: Double?
+    let selfUseW: Double?
+    let drainSamples: Int?
 
     // convertFromSnakeCase turns "discharged_30d" into "discharged30D"
     enum CodingKeys: String, CodingKey {
         case nominalKwh, capacityKwh, health, cyclesTotal, tempMax, inverterTempMax, coverage, typicalLoadW
+        case drainW, drainLoadW, selfUseW, drainSamples
         case discharged30d = "discharged30D"
     }
 }
@@ -263,6 +270,33 @@ struct Stats: Decodable {
     let insights: Insights?
     let appliances: [ApplianceStat]?
     let schedule30: ScheduleAccuracy?
+    let peaks30: Peaks?
+}
+
+/// Biggest draw per day over 30 days and how often it came near a limit.
+struct Peaks: Decodable {
+    struct Day: Decodable, Identifiable {
+        let day: String
+        let maxW: Double
+        let ts: Double?
+        let nearLimit: Bool
+        var id: String { day }
+        init(from decoder: Decoder) throws {   // [day, max_w, ts, near_limit]
+            var c = try decoder.unkeyedContainer()
+            day = try c.decode(String.self)
+            maxW = try c.decode(Double.self)
+            ts = try c.decodeIfPresent(Double.self)
+            nearLimit = (try? c.decode(Bool.self)) ?? false
+        }
+        var date: Date? { Fmt.isoDay.date(from: day) }
+    }
+    let days: [Day]?
+    let maxW: Double?
+    let maxTs: Double?
+    let maxOnGrid: Bool?
+    let nearLimit: Int?
+    let inverterW: Double?
+    let bypassW: Double?
 }
 
 /// Plan vs reality for the YASNO schedule (minutes: positive = later than planned).
