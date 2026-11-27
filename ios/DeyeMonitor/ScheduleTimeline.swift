@@ -36,8 +36,7 @@ struct ScheduleTimeline: View {
         return DateInterval(start: start, end: end)
     }
 
-    private let laneLabel: CGFloat = 34
-    private let height: CGFloat = 104
+    private let height: CGFloat = TimelineCanvas.headerH + TimelineCanvas.trackH + TimelineCanvas.axisH
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -47,15 +46,7 @@ struct ScheduleTimeline: View {
                 }
                 .pickerStyle(.segmented)
             }
-            HStack(alignment: .top, spacing: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Color.clear.frame(height: TimelineCanvas.headerH)
-                    laneTitle("план").frame(height: TimelineCanvas.laneH)
-                    Color.clear.frame(height: TimelineCanvas.gap)
-                    laneTitle("факт").frame(height: TimelineCanvas.laneH)
-                }
-                .frame(width: laneLabel, alignment: .leading)
-                GeometryReader { geo in
+            GeometryReader { geo in
                     TimelineCanvas(plan: plan, fact: fact, range: range, now: now, selected: selected,
                                    left: left, span: span)
                         .contentShape(Rectangle())
@@ -64,10 +55,10 @@ struct ScheduleTimeline: View {
                         .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { zoomToggle(at: $0.location.x, width: geo.size.width) })
                         .simultaneousGesture(SpatialTapGesture().onEnded { tap(at: $0.location, width: geo.size.width) })
                         .onAppear { if !ready { reset(); ready = true } }
-                }
-                .frame(height: height)
-                .clipped()
             }
+            .frame(height: height)
+            .clipped()
+            legend
             controls
             if let selected {
                 ScheduleItemDetail(item: selected, plan: plan, fact: fact, now: now)
@@ -78,8 +69,21 @@ struct ScheduleTimeline: View {
         .animation(.snappy(duration: 0.25), value: selected)
     }
 
-    private func laneTitle(_ s: String) -> some View {
-        Text(s).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+    private var legend: some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 5) {
+                RoundedRectangle(cornerRadius: 3).fill(Theme.critical.opacity(0.22))
+                    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Theme.critical.opacity(0.75),
+                                                                           style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                    .frame(width: 16, height: 11)
+                Text("за графіком")
+            }
+            HStack(spacing: 5) {
+                RoundedRectangle(cornerRadius: 3).fill(Theme.critical).frame(width: 16, height: 7)
+                Text("фактично без світла")
+            }
+        }
+        .font(.caption).foregroundStyle(.secondary)
     }
 
     // MARK: controls
@@ -183,10 +187,15 @@ struct ScheduleTimeline: View {
     private func tap(at p: CGPoint, width: CGFloat) {
         let t = range.start.addingTimeInterval(left + Double(p.x / max(width, 1)) * span)
         let slop = span / Double(max(width, 1)) * 10   // forgiving for thin blocks
-        let lane: Kind? = TimelineCanvas.lane(at: p.y)
-        let list: [(Kind, DateInterval)] = (lane == .fact ? [] : plan.map { (.plan, $0) }) + (lane == .plan ? [] : fact.map { (.fact, $0) })
-        let hit = list.first { $0.1.start.addingTimeInterval(-slop) <= t && t <= $0.1.end.addingTimeInterval(slop) }
-        selected = hit.map { Item(kind: $0.0, interval: $0.1) }
+        guard p.y >= TimelineCanvas.headerH - 8, p.y <= TimelineCanvas.headerH + TimelineCanvas.trackH + 8 else {
+            selected = nil
+            return
+        }
+        // one track: what really happened wins over the plan it sits in (the details show both anyway)
+        let under = { (i: DateInterval) in i.start.addingTimeInterval(-slop) <= t && t <= i.end.addingTimeInterval(slop) }
+        if let f = fact.first(where: under) { selected = Item(kind: .fact, interval: f) }
+        else if let pl = plan.first(where: under) { selected = Item(kind: .plan, interval: pl) }
+        else { selected = nil }
     }
 }
 
@@ -202,14 +211,9 @@ private struct TimelineCanvas: View, Animatable {
     var left: TimeInterval
     var span: TimeInterval
 
-    static let headerH: CGFloat = 20, laneH: CGFloat = 28, gap: CGFloat = 8, axisH: CGFloat = 20
-    static var planY: CGFloat { headerH }
-    static var factY: CGFloat { headerH + laneH + gap }
-
-    static func lane(at y: CGFloat) -> ScheduleTimeline.Kind? {
-        if y < planY + laneH + gap / 2 { return y >= planY - 6 ? .plan : nil }
-        return y <= factY + laneH + 6 ? .fact : nil
-    }
+    /// One track: the plan fills its height, what really happened is a solid bar inside it.
+    static let headerH: CGFloat = 20, trackH: CGFloat = 56, axisH: CGFloat = 20
+    static let factInset: CGFloat = 18
 
     var animatableData: AnimatablePair<Double, Double> {
         get { AnimatablePair(left, span) }
@@ -221,12 +225,9 @@ private struct TimelineCanvas: View, Animatable {
             let w = size.width
             let x0 = range.start.addingTimeInterval(left)
             let x = { (d: Date) -> CGFloat in CGFloat(d.timeIntervalSince(x0) / span) * w }
-            let laneRect = { (y: CGFloat) in CGRect(x: 0, y: y, width: w, height: Self.laneH) }
-
-            // lane backgrounds
-            for y in [Self.planY, Self.factY] {
-                ctx.fill(Path(roundedRect: laneRect(y), cornerRadius: 7), with: .color(.primary.opacity(0.06)))
-            }
+            let top = Self.headerH, bottom = Self.headerH + Self.trackH
+            ctx.fill(Path(roundedRect: CGRect(x: 0, y: top, width: w, height: Self.trackH), cornerRadius: 9),
+                     with: .color(.primary.opacity(0.06)))
 
             // hour grid + labels, density follows the zoom
             let step = Self.tickStep(span: span)
@@ -237,45 +238,49 @@ private struct TimelineCanvas: View, Animatable {
             while t <= end {
                 let px = x(t)
                 let midnight = cal.component(.hour, from: t) == 0 && cal.component(.minute, from: t) == 0
-                var line = Path(); line.move(to: CGPoint(x: px, y: Self.planY)); line.addLine(to: CGPoint(x: px, y: Self.factY + Self.laneH))
+                var line = Path(); line.move(to: CGPoint(x: px, y: top)); line.addLine(to: CGPoint(x: px, y: bottom))
                 ctx.stroke(line, with: .color(.primary.opacity(midnight ? 0.35 : 0.1)), lineWidth: midnight ? 1.2 : 1)
                 if px > 16 && px < w - 16 {  // a half-cut label reads as a different time
                     ctx.draw(Text(Fmt.time(t)).font(.caption2).monospacedDigit().foregroundStyle(.tertiary),
-                             at: CGPoint(x: px, y: Self.factY + Self.laneH + 11), anchor: .center)
+                             at: CGPoint(x: px, y: bottom + 11), anchor: .center)
                 }
                 t = t.addingTimeInterval(step)
             }
 
             let nx = x(now)
 
-            // blocks
-            func block(_ i: DateInterval, y: CGFloat, plan isPlan: Bool) {
-                let a = x(i.start), b = x(i.end)
-                guard b > 0, a < w else { return }
-                let r = CGRect(x: a, y: y + 2, width: max(4, b - a), height: Self.laneH - 4)
-                let path = Path(roundedRect: r, cornerRadius: 6)
-                let isSel = selected?.interval == i && selected?.kind == (isPlan ? .plan : .fact)
-                if isPlan {
-                    ctx.fill(path, with: .color(Theme.critical.opacity(isSel ? 0.4 : 0.22)))
-                    ctx.stroke(path, with: .color(Theme.critical.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 2]))
-                } else {
-                    ctx.fill(path, with: .color(Theme.critical.opacity(isSel ? 1 : 0.85)))
-                }
-                if isSel { ctx.stroke(path, with: .color(.primary), lineWidth: 2) }
-                if r.width > 84 {
-                    let label = "\(Fmt.time(i.start))–\(i.end > now && !isPlan ? "зараз" : Fmt.slotEnd(i))"
-                    let visibleA = max(a, 0)
-                    ctx.draw(Text(label).font(.caption2.weight(.semibold)).monospacedDigit()
-                                .foregroundStyle(isPlan ? Color.primary : Color.white),
-                             at: CGPoint(x: min(visibleA + 6, b - 6), y: y + Self.laneH / 2), anchor: .leading)
-                }
+            // blocks: the plan full height, the fact as a bar inside it
+            func label(_ text: String, from a: CGFloat, to b: CGFloat, y: CGFloat, color: Color, minWidth: CGFloat) {
+                guard b - max(a, 0) > minWidth else { return }
+                ctx.draw(Text(text).font(.caption2.weight(.semibold)).monospacedDigit().foregroundStyle(color),
+                         at: CGPoint(x: min(max(a, 0) + 6, b - 6), y: y), anchor: .leading)
             }
-            plan.forEach { block($0, y: Self.planY, plan: true) }
-            fact.forEach { block($0, y: Self.factY, plan: false) }
+            for i in plan {
+                let a = x(i.start), b = x(i.end)
+                guard b > 0, a < w else { continue }
+                let path = Path(roundedRect: CGRect(x: a, y: top + 2, width: max(4, b - a), height: Self.trackH - 4), cornerRadius: 8)
+                let isSel = selected == ScheduleTimeline.Item(kind: .plan, interval: i)
+                ctx.fill(path, with: .color(Theme.critical.opacity(isSel ? 0.36 : 0.18)))
+                ctx.stroke(path, with: .color(Theme.critical.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 2]))
+                if isSel { ctx.stroke(path, with: .color(.primary), lineWidth: 2) }
+                label(Fmt.slot(i), from: a, to: b, y: top + 10, color: .primary.opacity(0.8), minWidth: 78)
+            }
+            for i in fact {
+                let a = x(i.start), b = x(i.end)
+                guard b > 0, a < w else { continue }
+                let path = Path(roundedRect: CGRect(x: a, y: top + Self.factInset, width: max(4, b - a),
+                                                    height: Self.trackH - Self.factInset - 6), cornerRadius: 6)
+                let isSel = selected == ScheduleTimeline.Item(kind: .fact, interval: i)
+                ctx.fill(path, with: .color(Theme.critical.opacity(isSel ? 1 : 0.88)))
+                if isSel { ctx.stroke(path, with: .color(.primary), lineWidth: 2) }
+                let ongoing = i.end >= now.addingTimeInterval(-60)
+                label("\(Fmt.time(i.start))–\(ongoing ? "зараз" : Fmt.time(i.end))", from: a, to: b,
+                      y: top + Self.factInset + (Self.trackH - Self.factInset - 6) / 2, color: .white, minWidth: 78)
+            }
 
             // now
             if nx >= 0 && nx <= w {
-                var line = Path(); line.move(to: CGPoint(x: nx, y: Self.planY - 3)); line.addLine(to: CGPoint(x: nx, y: Self.factY + Self.laneH + 3))
+                var line = Path(); line.move(to: CGPoint(x: nx, y: top - 3)); line.addLine(to: CGPoint(x: nx, y: bottom + 3))
                 ctx.stroke(line, with: .color(.primary), lineWidth: 2.5)
                 ctx.draw(Text("зараз").font(.caption2.weight(.bold)).foregroundStyle(.primary),
                          at: CGPoint(x: min(max(nx, 20), w - 20), y: 8), anchor: .center)
