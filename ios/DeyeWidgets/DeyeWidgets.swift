@@ -293,7 +293,7 @@ struct PowerWidgetView: View {
         let gridOn = live?.gridOn == true
         let items: [(String, String, String)] = [
             ("bolt.fill", gridOn ? "\(Int(live?.gridPower ?? 0)) Вт" : "немає", "мережа"),
-            ("battery.75percent", live?.soc == nil ? "—" : "\(Int(abs(live?.drawW ?? live?.batteryPower ?? 0))) Вт", "батарея"),
+            (Fmt.batterySymbol(live?.soc), live?.soc == nil ? "—" : "\(Int(abs(live?.drawW ?? live?.batteryPower ?? 0))) Вт", "батарея"),
             ("house.fill", "\(Int(live?.load ?? 0)) Вт", "квартира"),
         ]
         return HStack(spacing: compact ? 8 : 0) {

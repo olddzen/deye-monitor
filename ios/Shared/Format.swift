@@ -61,6 +61,13 @@ enum Fmt {
     }
 
     /// "19:00–24:00"
+    /// SF Symbol whose fill matches the charge, so a 100 % battery never shows as three-quarters.
+    static func batterySymbol(_ soc: Double?) -> String {
+        guard let s = soc else { return "battery.0percent" }
+        return s > 87 ? "battery.100percent" : s > 62 ? "battery.75percent" : s > 37 ? "battery.50percent"
+            : s > 12 ? "battery.25percent" : "battery.0percent"
+    }
+
     static func slot(_ i: DateInterval) -> String { "\(time(i.start))–\(slotEnd(i))" }
     static func dayMonth(_ date: Date) -> String { dm.string(from: date) }
 

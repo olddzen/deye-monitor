@@ -22,7 +22,7 @@ struct OutageLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     if let soc = s.soc {
-                        Label("\(Int(soc))%", systemImage: "battery.75percent").font(.caption.weight(.semibold)).monospacedDigit()
+                        Label("\(Int(soc))%", systemImage: Fmt.batterySymbol(soc)).font(.caption.weight(.semibold)).monospacedDigit()
                     }
                 }
                 DynamicIslandExpandedRegion(.center) {
@@ -86,7 +86,7 @@ private struct LockScreenOutage: View {
                     .font(.headline).foregroundStyle(tint)
                 Spacer()
                 if let soc = state.soc {
-                    Label("\(Int(soc))%", systemImage: "battery.75percent").font(.subheadline.weight(.semibold)).monospacedDigit()
+                    Label("\(Int(soc))%", systemImage: Fmt.batterySymbol(soc)).font(.subheadline.weight(.semibold)).monospacedDigit()
                 }
             }
             if let r = state.restoredAt {

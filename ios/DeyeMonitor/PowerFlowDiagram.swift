@@ -101,10 +101,7 @@ struct PowerFlowDiagram: View {
         }
     }
 
-    private var batterySymbol: String {
-        guard let s = live.soc else { return "battery.0percent" }
-        return s > 87 ? "battery.100percent" : s > 62 ? "battery.75percent" : s > 37 ? "battery.50percent" : "battery.25percent"
-    }
+    private var batterySymbol: String { Fmt.batterySymbol(live.soc) }
 
     private var batteryCaption: String {
         guard live.soc != nil else { return "Батарея" }

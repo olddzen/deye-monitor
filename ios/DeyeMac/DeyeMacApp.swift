@@ -124,7 +124,7 @@ private struct MacPanel: View {
                 flow("bolt.fill", live?.gridOn == true ? "\(Int(live?.gridPower ?? 0)) Вт" : "немає", "мережа")
                 Spacer()
                 let draw = live?.drawW ?? live?.batteryPower
-                flow("battery.100percent", draw.map { abs($0) > 20 ? "\(Int(abs($0))) Вт" : "0 Вт" } ?? "—",
+                flow(Fmt.batterySymbol(live?.soc), draw.map { abs($0) > 20 ? "\(Int(abs($0))) Вт" : "0 Вт" } ?? "—",
                      (draw ?? 0) < -20 ? "заряд" : (draw ?? 0) > 20 ? "розряд" : "батарея")
                 Spacer()
                 flow("house.fill", "\(Int(live?.load ?? 0)) Вт", "квартира")

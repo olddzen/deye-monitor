@@ -112,6 +112,16 @@ h2 { font-size: 13px; font-weight: 600; letter-spacing: .02em; text-transform: u
 .badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--warning-soft); color: var(--text-secondary); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { font-size: 13px; padding: 5px 10px; border-radius: 999px; background: var(--surface-1); border: 1px solid var(--line); }
+.rows { display: grid; gap: 10px; }
+.trow { display: grid; grid-template-columns: 20px 1fr auto; gap: 2px 10px; align-items: baseline; }
+.trow .ic { font-size: 14px; }
+.trow .t { font-size: 14px; }
+.trow .val { font-size: 14px; font-weight: 600; text-align: right; }
+.trow .note { grid-column: 2 / 4; font-size: 12px; color: var(--text-muted); }
+.trow.warn .note { color: #b07800; } .trow.bad .note { color: var(--critical); }
+.status { font-size: 12px; font-weight: 600; float: right; text-transform: none; letter-spacing: 0; }
+.headline { font-size: 18px; font-weight: 650; margin: 0 0 4px; }
+.lane-l { font-size: 11px; color: var(--text-muted); }
 footer { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 8px; }
 button.refresh { background: none; border: 0; color: var(--series-1); font: inherit; padding: 6px; cursor: pointer; }
 .err { padding: 40px 20px; text-align: center; }
@@ -193,13 +203,30 @@ async function refresh() {
 function render() {
   hideTip();
   const { live, data } = state;
-  const parts = [hero(live, data), batteryAndFlow(live), tiles(data), today(data, live), week(data),
+  const S = state.schedule;
+  const parts = [hero(live, data, S), outageMode(live), S ? scheduleCard(S, live, data) : today(data, live),
+                 batteryAndFlow(live), tech(live), tiles(data), week(data), peaks(data),
                  heat(data), daily(data), outageList(data), extra(data), footer(live)];
   document.getElementById("app").innerHTML = parts.filter(Boolean).join("");
   bindHovers();
 }
 
-function hero(L, D) {
+// ---------- schedule helpers (YASNO slots are minutes from local midnight; date carries the offset)
+const dayStartOf = (d) => (d && d.date ? Date.parse(d.date) / 1000 : null);
+function slotsOf(d) {
+  const t0 = dayStartOf(d);
+  return t0 === null || !d.off ? [] : d.off.map(([s, e]) => [t0 + s * 60, t0 + e * 60]);
+}
+const allSlots = (S) => [...slotsOf(S && S.today), ...slotsOf(S && S.tomorrow)];
+const slotLabel = ([s, e]) => `${hm(s)}–${localParts(e).h === 0 && localParts(e).m === 0 ? "24:00" : hm(e)}`;
+/** The planned switch-on for an outage that began at `since` (or is under way now). */
+function plannedEnd(S, since, now) {
+  const at = since || now;
+  const hit = allSlots(S).find(([s, e]) => at >= s - 45 * 60 && at < e);
+  return hit ? hit[1] : null;
+}
+
+function hero(L, D, S) {
   if (!L || L.error) {
     return `<section class="card hero stale"><span class="pill"><span class="dot"></span>Немає зв'язку з Deye</span>
       <div class="big">Дані недоступні</div><div class="meta sec">${esc((L && L.error) || "")}</div></section>`;
@@ -218,12 +245,159 @@ function hero(L, D) {
     if (open) forText = `вже ${dur(L.now - open[0])}`;
   }
   const sinceText = L.since ? `${on ? "дали" : "вимкнули"} о ${hm(L.since)}` : "";
+  const end = !on ? plannedEnd(S, L.since, L.now) : null;
+  const plan = end === null ? "" : end > L.now
+    ? `<div class="meta" style="font-weight:600">за графіком увімкнуть о ${hm(end)} · через ${dur(end - L.now)}</div>`
+    : `<div class="meta" style="font-weight:600;color:var(--critical)">мали увімкнути о ${hm(end)} — запізнюються на ${dur(L.now - end)}</div>`;
   return `<section class="card hero ${on ? "on" : "off"}">
     <div class="emoji">${on ? "💡" : "🕯️"}</div>
     <span class="pill"><span class="dot"></span>${on ? "Мережа є" : "Мережі немає"}</span>
     <div class="big">${on ? "Світло є" : "Світла немає"}</div>
     <div class="for num">${forText}</div>
-    <div class="meta sec">${[sinceText, L.voltage !== null ? `${Math.round(L.voltage)} В` : ""].filter(Boolean).join(" · ")}</div>
+    <div class="meta sec">${[sinceText, on && L.voltage !== null ? `${Math.round(L.voltage)} В` : ""].filter(Boolean).join(" · ")}</div>
+    ${plan}
+  </section>`;
+}
+
+// ---------- off-grid: where the battery's energy goes
+function outageMode(L) {
+  if (!L || L.error || L.stale || L.gridOn || L.soc === null || L.drawW === null || L.drawW === undefined) return "";
+  const row = (icon, t, v) => `<div class="trow"><span class="ic">${icon}</span><span class="t">${t}</span><span class="val num">${v}</span></div>`;
+  return `<section class="card"><h2>Режим без світла</h2><div class="rows">
+    ${row("🏠", "Квартира зараз", `${Math.round(L.load ?? 0)} Вт`)}
+    ${row("⚙️", "Інвертор сам", `≈ ${Math.round(L.selfUseW ?? 35)} Вт`)}
+    ${row("🔋", "Батарея віддає", `≈ ${Math.round(L.drawW)} Вт`)}
+    ${L.runtimeH ? row("⏳", "Вистачить при такому споживанні", `≈ ${dur(L.runtimeH * 3600)}`) : ""}
+  </div><div class="muted" style="font-size:12px;margin-top:10px">Інвертор витрачає енергію й на себе, тож батарея віддає більше, ніж бере квартира</div></section>`;
+}
+
+// ---------- schedule: plan vs fact for today, plan for tomorrow
+const SCHED_STATUS = { ScheduleApplies: "діє графік", WaitingForSchedule: "графік ще не опубліковано",
+                       EmergencyShutdowns: "екстрені відключення — графік не діє" };
+function scheduleCard(S, L, D) {
+  const now = L && L.now ? L.now : Date.now() / 1000;
+  const t = S.today, slots = allSlots(S);
+  let headline;
+  const cur = slots.find(([s, e]) => now >= s && now < e);
+  const next = slots.find(([s]) => s > now);
+  if (t && t.status && t.status !== "ScheduleApplies") headline = SCHED_STATUS[t.status] || t.status;
+  else if (cur) headline = `Зараз за графіком без світла до ${slotLabel(cur).split("–")[1]}`;
+  else if (next) headline = `Наступне відключення о ${hm(next[0])} · через ${dur(next[0] - now)}`;
+  else headline = "До кінця доби відключень немає";
+
+  const W = 320, H = 14;
+  const lane = (d, fact) => {
+    const t0 = dayStartOf(d);
+    if (t0 === null) return "";
+    const x = (v) => Math.min(W, Math.max(0, ((v - t0) / 86400) * W));
+    const plan = slotsOf(d).map(([s, e]) => `<rect class="hov" x="${x(s)}" y="0" width="${Math.max(2, x(e) - x(s))}" height="${H}" rx="4"
+        fill="var(--critical-soft)" stroke="var(--critical)" stroke-dasharray="3 2" data-tip="За графіком ${slotLabel([s, e])}"/>`).join("");
+    let factBars = "";
+    if (fact) {
+      factBars = (D && D.outages || []).map(([s, e]) => [Math.max(s, t0), Math.min(e ?? now, now), s, e]).filter(([s, e]) => e > s)
+        .map(([s, e, s0, e0]) => `<rect class="hov" x="${x(s)}" y="${H + 6}" width="${Math.max(2, x(e) - x(s))}" height="${H}" rx="4"
+          fill="var(--critical)" data-tip="Фактично ${hm(s0)}–${e0 ? hm(e0) : "зараз"}<br>${dur((e0 ?? now) - s0)}"/>`).join("");
+      if (L && !L.gridOn && !L.stale && L.since && !(D && D.outages || []).some((o) => o[1] === null)) {
+        factBars += `<rect x="${x(Math.max(L.since, t0))}" y="${H + 6}" width="${Math.max(2, x(now) - x(Math.max(L.since, t0)))}" height="${H}" rx="4" fill="var(--critical)"/>`;
+      }
+    }
+    const rows = fact ? 2 : 1, h = rows * H + (rows - 1) * 6;
+    const nowLine = fact ? `<line x1="${x(now)}" x2="${x(now)}" y1="-3" y2="${h + 3}" stroke="var(--text-primary)" stroke-width="2"/>` : "";
+    const ticks = [0, 6, 12, 18, 24].map((hh) => `<text class="axis" x="${(hh / 24) * W}" y="${h + 15}" text-anchor="${hh === 0 ? "start" : hh === 24 ? "end" : "middle"}">${String(hh).padStart(2, "0")}</text>`).join("");
+    const bg = Array.from({ length: rows }, (_, i) => `<rect x="0" y="${i * (H + 6)}" width="${W}" height="${H}" rx="4" fill="var(--track)" opacity=".6"/>`).join("");
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${h + 18}" role="img" aria-label="Графік відключень">${bg}${plan}${factBars}${nowLine}${ticks}</svg></div>`;
+  };
+  const todayText = t && t.off && t.off.length ? slotsOf(t).map(slotLabel).join(", ") : "відключень немає";
+  const tm = S.tomorrow;
+  const tmText = !tm ? "" : tm.status && tm.status !== "ScheduleApplies" ? (SCHED_STATUS[tm.status] || tm.status)
+    : tm.off && tm.off.length ? slotsOf(tm).map(slotLabel).join(", ") : "відключень немає";
+  return `<section class="card"><h2>Графік · група ${esc(S.group)}</h2>
+    <div class="headline">${esc(headline)}</div>
+    <div class="lane-l" style="margin:10px 0 4px">Сьогодні: ${todayText}</div>
+    ${lane(t, true)}
+    <div class="legend"><span><i style="background:var(--critical-soft);border:1px dashed var(--critical)"></i>план</span>
+      <span><i style="background:var(--critical)"></i>фактично без світла</span></div>
+    ${tm ? `<div class="lane-l" style="margin:14px 0 4px">Завтра: ${esc(tmText)}</div>${tm.off && tm.off.length ? lane(tm, false) : ""}` : ""}
+  </section>`;
+}
+
+// ---------- technical state in plain words
+const INVERTER_W = 6000, BYPASS_W = 8000;
+const watts = (w) => (Math.max(w, 0) < 1000 ? `${Math.round(Math.max(w, 0))} Вт` : `${n1(w / 1000)} кВт`);
+function tech(L) {
+  if (!L || L.error) return "";
+  const r = [], on = L.gridOn;
+  const add = (t, v, note, lvl) => r.push({ t, v, note, lvl });
+  if (on && L.voltage !== null) {
+    const v = L.voltage, lvl = v >= 207 && v <= 253 ? "ok" : v < 195 || v > 260 ? "bad" : "warn";
+    add("Напруга мережі", `${Math.round(v)} В`, lvl === "ok" ? "у нормі (207–253 В)" : v < 207 ? "занизька — техніка з двигунами працює гірше" : "зависока — інвертор може відключитись від мережі", lvl);
+  } else add("Напруга мережі", "—", "світла немає", "idle");
+  if (on && L.freq > 0) {
+    const ok = L.freq >= 49.5 && L.freq <= 50.5;
+    add("Частота мережі", `${L.freq.toFixed(2)} Гц`, ok ? "стабільна" : "нестабільна — мережа «гуляє»", ok ? "ok" : "warn");
+  }
+  if (L.relay) {
+    const closed = /pull|close/i.test(L.relay);
+    add("Реле мережі", closed ? "замкнене" : "розімкнене", closed ? "квартира живиться від мережі напряму" : "інвертор відʼєднався від мережі — квартира на батареї", closed ? "ok" : on ? "warn" : "idle");
+  }
+  if (on && L.gridPower !== null) {
+    const sh = Math.max(L.gridPower, 0) / BYPASS_W;
+    add("Запас потужності", `${watts(L.gridPower)} з ~8 кВт`, sh > 0.85 ? "майже межа — вимкни щось потужне" : "мережа йде через інвертор, запас є", sh > 0.85 ? "bad" : sh > 0.65 ? "warn" : "ok");
+  } else if (L.load !== null) {
+    const sh = L.load / INVERTER_W;
+    add("Запас потужності", `${watts(L.load)} з 6 кВт`, sh > 0.85 ? "майже межа — інвертор може вимкнутись" : "від батареї: до 6 кВт одночасно", sh > 0.85 ? "bad" : sh > 0.65 ? "warn" : "ok");
+  }
+  const b = L.battery || {};
+  if (b.chargeLimitA !== null && b.chargeLimitA !== undefined) {
+    const blocked = b.chargeLimitA <= 0, needs = on && (L.soc ?? 100) < 98;
+    add("Батарея дозволяє заряд", blocked ? "ні · 0 А" : `так · до ${Math.round(b.chargeLimitA)} А`,
+        blocked ? (needs ? "BMS заблокувала заряд, хоча батарея не повна" : "BMS тимчасово не приймає заряд") : "BMS не обмежує заряд",
+        blocked ? (needs ? "warn" : "idle") : "ok");
+  }
+  if (b.voltage !== null && b.voltage !== undefined) {
+    const a = b.current || 0, what = Math.abs(a) < 0.3 ? "відпочиває" : a < 0 ? "заряджається" : "віддає енергію";
+    add("Батарея зараз", `${n1(b.voltage)} В · ${n1(Math.abs(a))} А`, `${what} · норма 48–57 В`, b.voltage >= 46 && b.voltage <= 58 ? "ok" : "warn");
+  }
+  if (L.batteryTemp !== null) {
+    const t = L.batteryTemp, lvl = t >= 5 && t <= 45 ? "ok" : t < 0 || t > 50 ? "bad" : "warn";
+    add("Температура батареї", `${Math.round(t)}°`, lvl === "ok" ? "норма 5–45°" : t < 5 ? "холодно — заряд буде повільним" : "гаряче — провітрюй", lvl);
+  }
+  if (L.inverterTemp !== null && L.inverterTemp !== undefined) {
+    const t = L.inverterTemp, lvl = t < 65 ? "ok" : t < 80 ? "warn" : "bad";
+    add("Температура інвертора", `${Math.round(t)}°`, lvl === "ok" ? "норма до 65°" : "гарячий — перевір вентиляцію", lvl);
+  }
+  const icon = { ok: "✅", warn: "⚠️", bad: "⛔", idle: "➖" };
+  const worst = r.some((x) => x.lvl === "bad") ? "bad" : r.some((x) => x.lvl === "warn") ? "warn" : "ok";
+  const head = { ok: ["все в нормі", "var(--good-text)"], warn: ["є на що глянути", "#b07800"], bad: ["потрібна увага", "var(--critical)"] }[worst];
+  return `<section class="card"><h2>Технічний стан зараз <span class="status" style="color:${head[1]}">${head[0]}</span></h2><div class="rows">
+    ${r.map((x) => `<div class="trow ${x.lvl}"><span class="ic">${icon[x.lvl]}</span><span class="t">${x.t}</span><span class="val num">${x.v}</span><span class="note">${x.note}</span></div>`).join("")}
+  </div></section>`;
+}
+
+// ---------- 30-day power peaks against the inverter's limits
+function peaks(D) {
+  const P = D && D.peaks30;
+  if (!P || !P.days || !P.days.length) return "";
+  const inv = (P.inverter_w || INVERTER_W) / 1000, byp = (P.bypass_w || BYPASS_W) / 1000;
+  const W = 320, H = 120, padB = 16, padL = 22, ymax = Math.max(byp, (P.max_w || 0) / 1000 + 0.5);
+  const rows = P.days, bw = (W - padL) / rows.length, Y = (v) => (H - padB) * (1 - v / ymax);
+  const bars = rows.map(([day, w, ts, near], i) => {
+    const x = padL + i * bw + 1, kw = w / 1000;
+    return `<rect class="hov" x="${x}" y="0" width="${bw - 2}" height="${H - padB}" fill="transparent"
+        data-tip="${new Date(day + "T12:00:00").toLocaleDateString("uk-UA", { day: "numeric", month: "short" })}, ${hm(ts)}<br><b>${n1(kw)} кВт</b>"/>
+      <rect x="${x}" y="${Y(kw)}" width="${bw - 2}" height="${Math.max(1, H - padB - Y(kw))}" rx="2" fill="${near ? "var(--warning)" : "var(--series-1)"}" pointer-events="none"/>`;
+  }).join("");
+  const yt = [0, 2, 4, 6, 8].filter((v) => v <= ymax).map((v) => `<line class="grid" x1="${padL}" x2="${W}" y1="${Y(v)}" y2="${Y(v)}"/>
+    <text class="axis" x="${padL - 5}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join("");
+  const limit = `<line x1="${padL}" x2="${W}" y1="${Y(inv)}" y2="${Y(inv)}" stroke="var(--critical)" stroke-dasharray="4 3" opacity=".7"/>
+    <text class="axis" x="${padL + 4}" y="${Y(inv) - 4}" style="fill:var(--critical)">${inv} кВт — межа від батареї</text>`;
+  const near = P.near_limit || 0;
+  return `<section class="card"><h2>Піки потужності · 30 днів</h2>
+    ${P.max_w ? `<div class="headline num">${n1(P.max_w / 1000)} кВт найбільше</div>
+      <div class="sec" style="font-size:13px">${dmy(P.max_ts)} о ${hm(P.max_ts)} · ${P.max_on_grid ? `з мережі (межа ~${byp} кВт)` : `від батареї (межа ${inv} кВт)`}</div>` : ""}
+    <div class="chart" style="margin-top:10px"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Піки потужності">${yt}${bars}${limit}</svg></div>
+    <div style="margin-top:8px;font-weight:600;font-size:14px;color:${near ? "#b07800" : "var(--good-text)"}">${near ? `⚠️ Близько до межі: ${near} раз(и) — жовті дні` : "✅ Жодного разу не підходили до межі"}</div>
+    <div class="muted" style="font-size:12px;margin-top:6px">Зі світлом інвертор пропускає з мережі ~${byp} кВт, без світла віддає до ${inv} кВт. Deye записує дані раз на ~5 хв, тож короткі кидки сюди можуть не потрапити.</div>
   </section>`;
 }
 
@@ -232,8 +406,10 @@ function batteryAndFlow(L) {
   const soc = L.soc;
   const R = 52, C = 2 * Math.PI * R;
   const color = soc === null ? "var(--nodata)" : soc < 20 ? "var(--critical)" : soc < 40 ? "var(--warning)" : "var(--good)";
-  const bp = L.batteryPower;
-  const mode = soc === null ? "немає даних від BMS" : bp < -20 ? `заряджається · ${-bp} Вт` : bp > 20 ? `розряджається · ${bp} Вт` : "у спокої";
+  // off-grid the battery also feeds the inverter itself: show the real draw, not the noisy reading
+  const bp = !L.gridOn && L.drawW !== null && L.drawW !== undefined ? Math.round(L.drawW) : L.batteryPower;
+  const mode = soc === null ? "немає даних від BMS" : bp < -20 ? (soc >= 99 && -bp < 300 ? "повна · підтримується" : `заряджається · ${-bp} Вт`)
+    : bp > 20 ? `розряджається · ${!L.gridOn ? "≈ " : ""}${bp} Вт` : "у спокої";
   const ring = `<div class="card ring">
     <svg viewBox="0 0 132 132" role="img" aria-label="Заряд батареї ${soc ?? "невідомо"}%">
       <circle cx="66" cy="66" r="${R}" fill="none" stroke="var(--track)" stroke-width="12"/>
@@ -243,7 +419,6 @@ function batteryAndFlow(L) {
       <text x="66" y="66" text-anchor="middle" dominant-baseline="central" style="font-size:28px;font-weight:700;fill:var(--text-primary)">${soc === null ? "—" : soc + "%"}</text>
     </svg>
     <div class="sub sec">${mode}</div>
-    ${L.runtimeH ? `<div class="sub" style="font-weight:600">вистачить ≈ ${dur(L.runtimeH * 3600)}</div>` : ""}
   </div>`;
 
   // power flow: grid → inverter → home, battery ↕
@@ -421,7 +596,8 @@ function extra(D) {
 function footer(L) {
   const g = state.generated_at ? hm(state.generated_at) : "—";
   const l = L && L.updated ? hm(L.updated) : "—";
-  return `<footer>живі дані Deye на ${l} · статистика на ${g}<br><button class="refresh" onclick="refresh()">↻ Оновити</button></footer>`;
+  const age = L && L.updated && L.now ? ` (${Math.max(0, Math.round((L.now - L.updated) / 60))} хв тому)` : "";
+  return `<footer>живі дані Deye на ${l}${age} · статистика на ${g}<br><button class="refresh" onclick="refresh()">↻ Оновити</button></footer>`;
 }
 
 // ---------- hover layer

@@ -162,7 +162,7 @@ private struct BatteryCard: View {
                     Metric(value: "\(Int(soc))", unit: "%", size: 44)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(bp < -20 ? (soc >= 99 ? "повна · підтримується" : "заряджається")
+                        Text(bp < -20 ? (soc >= 99 && -bp < 300 ? "повна · підтримується" : "заряджається")
                              : math.isDischarging ? "розряджається" : "у спокої")
                             .font(.subheadline.weight(.medium))
                         if math.offGrid {

@@ -778,9 +778,10 @@ async function statusText(env) {
   if (d.soc === null) {
     lines.push("🔋 немає даних від BMS");
   } else {
-    const bp = d.batteryPower;
+    // off-grid the battery also feeds the inverter itself: the real draw, not the noisy reading
+    const bp = !d.gridOn && d.drawW !== null ? Math.round(d.drawW) : d.batteryPower;
     const mode = bp < -20 ? "заряджається" : bp > 20 ? "розряджається" : "у спокої";
-    lines.push(`🔋 ${d.soc}% (${mode}, ${Math.abs(bp)} Вт)` +
+    lines.push(`🔋 ${d.soc}% (${mode}, ${d.gridOn ? "" : "≈ "}${Math.abs(bp)} Вт)` +
       (d.runtimeH ? `, вистачить ≈ ${duration(d.runtimeH * 3600)}` : ""));
   }
   if (d.load !== null) lines.push(`🏠 Навантаження: ${d.load} Вт`);
