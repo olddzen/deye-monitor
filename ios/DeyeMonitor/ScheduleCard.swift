@@ -18,9 +18,11 @@ struct ScheduleCard: View {
             headline(now: now)
             let today0 = schedule.today?.start ?? Fmt.kyivCalendar.startOfDay(for: now)
             let last0 = schedule.tomorrow?.start ?? today0
-            let range = DateInterval(start: today0.addingTimeInterval(-86400), end: last0.addingTimeInterval(86400))
-            let facts = actual(in: range, now: now)
-            ScheduleTimeline(plan: planned, fact: facts, range: range, now: now)
+            let cal = Fmt.kyivCalendar
+            let yesterday0 = cal.date(byAdding: .day, value: -1, to: today0) ?? today0.addingTimeInterval(-86400)
+            let days = [yesterday0, today0] + (last0 > today0 ? [last0] : [])
+            let facts = actual(in: DateInterval(start: yesterday0, end: now), now: now)
+            ScheduleTimeline(plan: planned, fact: facts, days: days, now: now)
             VStack(alignment: .leading, spacing: 4) {
                 if let today = schedule.today { summary("Сьогодні", today) }
                 if let tomorrow = schedule.tomorrow { summary("Завтра", tomorrow) }

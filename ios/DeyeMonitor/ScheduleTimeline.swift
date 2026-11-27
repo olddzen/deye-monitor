@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// One continuous timeline (yesterday → the last day YASNO has published) with the plan and what really
-/// happened. Drag to scroll (with inertia), pinch or double-tap to zoom, tap a block for the details.
+/// One day (00:00–24:00) of plan and what really happened, picked with Вчора / Сьогодні / Завтра.
+/// Drag to scroll (with inertia), pinch or double-tap to zoom, tap a block for the details.
 struct ScheduleTimeline: View {
     let plan: [DateInterval]
     let fact: [DateInterval]
-    let range: DateInterval
+    /// Local midnights that can be shown: yesterday, today and tomorrow once YASNO has published it.
+    let days: [Date]
     let now: Date
 
     enum Kind { case plan, fact }
@@ -15,7 +16,6 @@ struct ScheduleTimeline: View {
     }
 
     static let minSpan: TimeInterval = 3 * 3600
-    static let maxSpan: TimeInterval = 48 * 3600
 
     @State private var left: TimeInterval = 0       // seconds from range.start at the left edge
     @State private var span: TimeInterval = 24 * 3600
@@ -23,12 +23,30 @@ struct ScheduleTimeline: View {
     @State private var pinchStart: (left: TimeInterval, span: TimeInterval)?
     @State private var selected: Item?
     @State private var ready = false
+    @State private var dayIndex: Int?
+
+    private var todayIndex: Int {
+        days.firstIndex { Fmt.kyivCalendar.isDate($0, inSameDayAs: now) } ?? max(0, days.count - 1)
+    }
+    private var currentIndex: Int { min(dayIndex ?? todayIndex, max(0, days.count - 1)) }
+    /// The day on screen: midnight to the next midnight (23 or 25 h on DST days).
+    private var range: DateInterval {
+        let start = days.isEmpty ? Fmt.kyivCalendar.startOfDay(for: now) : days[currentIndex]
+        let end = Fmt.kyivCalendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86400)
+        return DateInterval(start: start, end: end)
+    }
 
     private let laneLabel: CGFloat = 34
     private let height: CGFloat = 104
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if days.count > 1 {
+                Picker("День", selection: Binding(get: { currentIndex }, set: { pick($0) })) {
+                    ForEach(days.indices, id: \.self) { i in Text(TimelineCanvas.dayName(days[i], now: now)).tag(i) }
+                }
+                .pickerStyle(.segmented)
+            }
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: TimelineCanvas.headerH)
@@ -70,10 +88,10 @@ struct ScheduleTimeline: View {
         HStack(spacing: 8) {
             Text(spanLabel).font(.caption.weight(.medium)).foregroundStyle(.secondary).monospacedDigit()
             Spacer()
-            control("minus.magnifyingglass") { zoom(by: 1.6) }.disabled(span >= Self.maxSpan)
+            control("minus.magnifyingglass") { zoom(by: 1.6) }.disabled(span >= total - 60)
             control("plus.magnifyingglass") { zoom(by: 1 / 1.6) }.disabled(span <= Self.minSpan)
             Button {
-                withAnimation(.snappy) { reset() }
+                withAnimation(.snappy) { pick(todayIndex) }
             } label: {
                 Label("Зараз", systemImage: "scope").font(.caption.weight(.semibold))
                     .padding(.horizontal, 10).padding(.vertical, 6)
@@ -92,8 +110,7 @@ struct ScheduleTimeline: View {
     }
 
     private var spanLabel: String {
-        let h = Int((span / 3600).rounded())
-        return "видно \(h) год"
+        span >= total - 60 ? "уся доба" : "видно \(Int((span / 3600).rounded())) год"
     }
 
     // MARK: geometry
@@ -104,16 +121,20 @@ struct ScheduleTimeline: View {
         min(max(l, 0), max(0, total - s))
     }
 
-    /// Today 00:00–24:00, or the whole range if it is shorter.
+    /// The whole day on screen.
     private func reset() {
-        span = min(24 * 3600, total)
-        let nowSec = now.timeIntervalSince(range.start)
-        // keep "now" in the left third so what's coming is visible
-        left = clamp(left: nowSec - span / 3, span: span)
+        span = total
+        left = 0
+    }
+
+    private func pick(_ i: Int) {
+        dayIndex = i
+        selected = nil
+        reset()
     }
 
     private func zoom(by factor: Double, anchorFraction: Double = 0.5) {
-        let newSpan = min(max(span * factor, Self.minSpan), min(Self.maxSpan, total))
+        let newSpan = min(max(span * factor, Self.minSpan), total)
         let anchor = left + span * anchorFraction
         left = clamp(left: anchor - newSpan * anchorFraction, span: newSpan)
         span = newSpan
@@ -121,7 +142,7 @@ struct ScheduleTimeline: View {
 
     private func zoomToggle(at x: CGFloat, width: CGFloat) {
         let f = Double(x / max(width, 1))
-        withAnimation(.snappy) { zoom(by: span > 8 * 3600 ? 6 * 3600 / span : 24 * 3600 / span, anchorFraction: f) }
+        withAnimation(.snappy) { zoom(by: span > 8 * 3600 ? 6 * 3600 / span : total / span, anchorFraction: f) }
     }
 
     // MARK: gestures
@@ -151,7 +172,7 @@ struct ScheduleTimeline: View {
                 if pinchStart == nil { pinchStart = (left, span) }
                 guard let start = pinchStart else { return }
                 let f = Double(v.startLocation.x / max(width, 1))
-                let newSpan = min(max(start.span / Double(v.magnification), Self.minSpan), min(Self.maxSpan, total))
+                let newSpan = min(max(start.span / Double(v.magnification), Self.minSpan), total)
                 let anchor = start.left + start.span * f
                 span = newSpan
                 left = clamp(left: anchor - newSpan * f, span: newSpan)
@@ -225,20 +246,7 @@ private struct TimelineCanvas: View, Animatable {
                 t = t.addingTimeInterval(step)
             }
 
-            // day names at each midnight (and pinned at the left edge for the current one); "зараз" wins a clash
             let nx = x(now)
-            var day = cal.startOfDay(for: x0)
-            while day < end {
-                let px = max(x(day), 0)
-                let next = day.addingTimeInterval(86400)
-                // a clash with the "зараз" label moves the day name to the right of it
-                let lx = (nx > px - 24 && nx < px + 74) ? nx + 26 : px + 4
-                if x(next) - lx > 56 {
-                    ctx.draw(Text(Self.dayName(day, now: now)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary),
-                             at: CGPoint(x: lx, y: 8), anchor: .leading)
-                }
-                day = next
-            }
 
             // blocks
             func block(_ i: DateInterval, y: CGFloat, plan isPlan: Bool) {
