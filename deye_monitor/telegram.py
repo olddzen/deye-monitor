@@ -20,6 +20,7 @@ COMMANDS = {
     "stats": "Коротка статистика відключень",
     "history": "Останні відключення",
     "errors": "Серйозні помилки інвертора",
+    "guests": "Хто ще підключив свій Deye до бота",
 }
 
 
@@ -67,8 +68,10 @@ class Telegram:
     def sync_commands(self) -> bool:
         """Publish the command menu; returns True on success."""
         try:
-            self._call("setMyCommands", commands=[{"command": c, "description": d}
-                                                  for c, d in COMMANDS.items()])
+            # the owner's menu only: everyone else (guests) gets the worker's short default menu
+            scope = {"type": "chat", "chat_id": self.chat_id} if self.chat_id else {"type": "default"}
+            self._call("setMyCommands", scope=scope, commands=[{"command": c, "description": d}
+                                                               for c, d in COMMANDS.items()])
             return True
         except Exception as exc:
             log.warning("setMyCommands failed: %s", exc)

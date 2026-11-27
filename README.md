@@ -151,6 +151,16 @@ fine-grained токен лише на цей репозиторій з прав�
 
 Щоранку о `MORNING_HOUR` (за замовчуванням 8) бот надсилає підсумок ночі.
 
+### Гості: інші люди зі своїм Deye
+
+Будь-хто може написати боту `/start`. Власник отримує запит із кнопками «Дозволити» та «Відхилити». Після дозволу гість за 4 кроки підключає свій Deye: email і пароль Deye Cloud, потужність інвертора, групу YASNO (Київ).
+
+- **Що отримує гість:** сповіщення про світло, батарею, графік і аварії Deye, `/status` і міні-апп зі своїм станом, графіком і технічними даними.
+- **Чого гість не отримує:** довгої історії та звітів. Їх рахує GitHub-workflow, і вони лише для власника.
+- **Перевірки:** гостей перевіряє окремий запит раз на 2 хвилини (service binding `SELF`). Ліміт — 10 гостей.
+- **Пароль:** повідомлення з паролем бот одразу видаляє. Зберігається лише SHA-256 пароля, зашифрований AES-GCM ключем `GUEST_KEY`. Бот тільки читає дані й нічим не керує.
+- **Керування:** `/guests` показує список гостей з кнопками видалення. Гість може відключитися сам командою `/stop`, і тоді його дані видаляються.
+
 ### Або на сервері 24/7
 
 Безкоштовний або дешевий сервер, що працює 24/7: Oracle Cloud Always Free, Google Cloud e2-micro (free tier),
@@ -164,7 +174,7 @@ fine-grained токен лише на цей репозиторій з прав�
 
 ```bash
 .venv/bin/pip install pytest && .venv/bin/python -m pytest -q
-cd worker && node --loader ./test/html-loader.mjs test/live.test.mjs && node --loader ./test/html-loader.mjs test/app.test.mjs
+cd worker && node --loader ./test/html-loader.mjs test/live.test.mjs && node --loader ./test/html-loader.mjs test/app.test.mjs && node --loader ./test/html-loader.mjs test/guests.test.mjs
 ```
 
 Застосунок iOS / watchOS / macOS — у `ios/` (Xcode-проєкт `DeyeMonitor.xcodeproj`, секрети в `ios/Config/Secrets.xcconfig`).

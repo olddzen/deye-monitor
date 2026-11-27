@@ -2,7 +2,8 @@
 # Secrets (wrangler secret put …): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_WEBHOOK_SECRET,
 # DEYE_CLOUD_APP_ID, DEYE_CLOUD_APP_SECRET, DEYE_CLOUD_EMAIL, DEYE_CLOUD_PASSWORD_SHA256,
 # DEYE_CLOUD_DEVICE_SN, GITHUB_TOKEN (fine-grained, Actions: read & write on this repo only),
-# CACHE_SECRET (same value as the GitHub secret; lets the workflow upload pre-rendered reports).
+# CACHE_SECRET (same value as the GitHub secret; lets the workflow upload pre-rendered reports),
+# GUEST_KEY (random; encrypts guests' Deye password hashes in KV).
 name = "deye-monitor-bot"
 main = "src/index.js"
 compatibility_date = "2025-06-01"
@@ -19,7 +20,12 @@ globs = ["**/*.html"]
 fallthrough = true
 
 [triggers]
-crons = ["* * * * *"]  # live alerts every minute; GitHub workflow every 5th minute
+crons = ["* * * * *"]  # live alerts every minute; GitHub workflow every 5th; guests every 2nd (via SELF)
+
+# the worker calls itself so guests' checks run in their own request, with their own CPU/subrequest limits
+[[services]]
+binding = "SELF"
+service = "deye-monitor-bot"
 
 [[kv_namespaces]]
 binding = "KV"

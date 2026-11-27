@@ -5,6 +5,7 @@
 //    from Deye Cloud; every 5 min it also starts the GitHub workflow (history, stats, reports).
 
 import APP_HTML from "./app.html";
+import { guestCallback, guestEnvFor, guestUpdate, guestsLiveCheck, ownerGuests } from "./guests.js";
 
 const DEYE_URL = "https://eu1-developer.deyecloud.com";
 const GRID_MIN_V = 180;
@@ -18,9 +19,10 @@ const REPORT_COMMANDS = {
   errors: "Серйозні помилки інвертора",
 };
 const COMMANDS = { status: "Чи є світло зараз, заряд батареї (миттєво)",
-                   dashboard: "Дашборд: графіки, батарея, відключення", ...REPORT_COMMANDS };
+                   dashboard: "Дашборд: графіки, батарея, відключення", ...REPORT_COMMANDS,
+                   guests: "Хто ще підключив свій Deye до бота" };
 const SOC_ALERTS = [30, 15];
-const BATTERY_WH = 11800, CUTOFF_SOC = 10;
+const BATTERY_WH = 11800, CUTOFF_SOC = 10;   // the owner's battery; guests carry their own (env.BATTERY_WH)
 const V_HIGH = 250, V_LOW = 200, V_OK = [205, 245];  // grid voltage alert band with hysteresis
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Deye single-phase LV hybrid: 6 kW from the battery; the grid relay passes ~35 A (≈ 8 kW).
@@ -82,6 +84,11 @@ export default {
       }
       return new Response("stored");
     }
+    if (request.method === "POST" && url.pathname === "/internal/guests") {
+      if (!cacheSecretOk(request, env)) return forbidden();
+      await guestsLiveCheck(env);
+      return new Response("ok");
+    }
     if (request.method === "GET" && url.pathname === "/api/day") return dayData(request, env, url);
     if (request.method === "GET" && url.pathname === "/st/callback") return stCallback(env, url);
     if (request.method === "GET" && url.pathname === "/schedule") {
@@ -105,19 +112,30 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(liveCheck(env).catch((e) => console.log("live check failed:", e && e.message)));
     ctx.waitUntil(stKeepFresh(env).catch((e) => console.log("st refresh failed:", e && e.message)));
-    if (new Date(event.scheduledTime).getUTCMinutes() % 5 === 0) {
+    const minute = new Date(event.scheduledTime).getUTCMinutes();
+    if (minute % 2 === 0) ctx.waitUntil(runGuests(env).catch((e) => console.log("guests check failed:", e && e.message)));
+    if (minute % 5 === 0) {
       ctx.waitUntil(dispatchWorkflow(env, "").catch((e) => console.log("dispatch failed:", e && e.message)));
       ctx.waitUntil(appExpiryReminder(env).catch((e) => console.log("expiry reminder failed:", e && e.message)));
     }
   },
 };
 
+/** Guests' live checks in a request of their own (service binding to this worker); inline in tests. */
+async function runGuests(env) {
+  if (!env.SELF) return guestsLiveCheck(env);
+  const r = await env.SELF.fetch("https://self/internal/guests", { method: "POST",
+                                                                  headers: { "X-Cache-Secret": env.CACHE_SECRET } });
+  const text = await r.text();  // read to the end, or the call counts as cancelled
+  if (!r.ok) throw new Error(`guests ${r.status}: ${text.slice(0, 80)}`);
+}
+
 // ---------------------------------------------------------------- Telegram
 async function handleUpdate(update, env) {
   if (update && update.callback_query) return handleCallback(update.callback_query, env);
   const msg = update && update.message;
   if (!msg || !msg.chat || typeof msg.text !== "string") return;
-  if (String(msg.chat.id) !== String(env.TELEGRAM_CHAT_ID)) return; // only the owner
+  if (String(msg.chat.id) !== String(env.TELEGRAM_CHAT_ID)) return guestUpdate(msg, env);
   const text = msg.text.trim();
   if (!text.startsWith("/")) return;
   const cmd = text.split(/\s+/)[0].slice(1).split("@")[0].toLowerCase();
@@ -131,6 +149,7 @@ async function handleUpdate(update, env) {
     }
     return sendMessage(env, reply);
   }
+  if (cmd === "guests") return ownerGuests(env);
   if (cmd === "smartthings") {
     if (!env.ST_CLIENT_ID) return sendMessage(env, "SmartThings ще не налаштовано (немає ST_CLIENT_ID).");
     const state = crypto.randomUUID();
@@ -208,8 +227,9 @@ async function liveCheck(env) {
     await sendMessage(env, "📶 Дані від Deye знову надходять");
   }
 
-  const voltage = num("GridVoltageL1L2");
+  const voltage = num(gridVKey(env));
   if (voltage === null) return;
+  const wh = batteryWh(env);
   const gridOn = voltage >= GRID_MIN_V;
   const { soc } = readBattery(num);
   const load = num("TotalConsumptionPower");
@@ -226,9 +246,9 @@ async function liveCheck(env) {
     let text;
     if (gridOn) {
       text = `💡 <b>Світло дали</b> о ${clock(updated)}` + (was ? `\nНе було: <b>${was}</b>` : "") +
-        `\n🔋 Батарея: ${socText}` + outageSummary(state, soc) + (await planDiff(env, state.since, updated));
+        `\n🔋 Батарея: ${socText}` + outageSummary(state, soc, wh) + (await planDiff(env, state.since, updated));
     } else {
-      const h = runtimeHours(soc, (load || 0) + selfUse);
+      const h = runtimeHours(soc, (load || 0) + selfUse, wh);
       text = `🔌 <b>Світло вимкнули</b> о ${clock(updated)}` + (was ? `\nБуло: ${was}` : "") +
         `\n🔋 Батарея: ${socText} · навантаження ${load ?? "?"} Вт` +
         (h !== null ? `\n⏳ Вистачить ≈ ${duration(h * 3600)} (до ~${clock(updated + h * 3600)})` +
@@ -248,7 +268,7 @@ async function liveCheck(env) {
     const crossed = SOC_ALERTS.filter((l) => soc <= l && !fired.includes(l));
     if (crossed.length) {
       const lowest = Math.min(...crossed);
-      const hours = runtimeHours(soc, offGridDraw);
+      const hours = runtimeHours(soc, offGridDraw, wh);
       await sendMessage(env, `🪫 Батарея ${soc}% (поріг ${lowest}%)` +
         (hours !== null ? `\nВистачить приблизно на ${duration(hours * 3600)} (до ~${clock(updated + hours * 3600)})` : ""));
       state.socFired = fired.concat(SOC_ALERTS.filter((x) => x >= lowest && !fired.includes(x)));
@@ -258,7 +278,7 @@ async function liveCheck(env) {
 
   // last hour of battery during an outage: one heads-up with what to switch off
   if (!gridOn && soc !== null && !state.etaFired) {
-    const h = runtimeHours(soc, offGridDraw);
+    const h = runtimeHours(soc, offGridDraw, wh);
     if (h !== null && h <= 1) {
       state.etaFired = true;
       await save();
@@ -294,8 +314,15 @@ async function liveCheck(env) {
   if (new Date().getUTCMinutes() % 5 === 0) await checkDeyeAlerts(env, sn, nowSec);
 }
 
+const batteryWh = (env) => Number(env.BATTERY_WH) || BATTERY_WH;
+const gridVKey = (env) => env.GRID_V_KEY || "GridVoltageL1L2";
+/** Power limits: the owner's are known; a guest's inverter is whatever they picked (0 = unknown). */
+const limits = (env) => (env.IS_GUEST ? { inverterW: Number(env.INVERTER_W) || 0, bypassW: 0 }
+                                      : { inverterW: INVERTER_W, bypassW: BYPASS_W });
+
 /** The inverter's own off-grid draw, measured by the workflow from real SOC drops (median). */
 async function selfUseW(env) {
+  if (env.SELF_USE_W) return Number(env.SELF_USE_W);
   const w = Number(await env.KV.get("self_use_w").catch(() => null));
   return Number.isFinite(w) && w > 0 && w <= 200 ? Math.round(w) : DEFAULT_SELF_USE_W;
 }
@@ -318,10 +345,10 @@ function readBattery(num) {
 }
 
 /** "Витрачено 3% (≈ 0.35 кВт·год)" for the grid-back message. */
-function outageSummary(state, soc) {
+function outageSummary(state, soc, wh = BATTERY_WH) {
   if (soc === null || state.socOff === null || state.socOff === undefined) return "";
   const used = Math.max(0, state.socOff - soc);
-  return `\n📉 Витрачено: ${used}% (≈ ${(used / 100 * BATTERY_WH / 1000).toFixed(2).replace(".", ",")} кВт·год)`;
+  return `\n📉 Витрачено: ${used}% (≈ ${(used / 100 * wh / 1000).toFixed(2).replace(".", ",")} кВт·год)`;
 }
 
 /** How the outage matched the YASNO schedule: "за графіком 19:00–24:00 · вимкнули на 34 хв пізніше". */
@@ -356,14 +383,15 @@ async function techAlerts(env, state, save, { gridOn, soc, updated, num }) {
   }
   // 2) close to the power limit
   const load = num("TotalConsumptionPower") || 0, grid = num("TotalGridPower") || 0;
-  const draw = gridOn ? Math.max(grid, load) : load, limit = gridOn ? BYPASS_W : INVERTER_W;
-  if (draw >= NEAR_LIMIT * limit && !(state.peakAt && updated - state.peakAt < PEAK_COOLDOWN_S)) {
+  const { inverterW, bypassW } = limits(env);
+  const draw = gridOn ? Math.max(grid, load) : load, limit = gridOn ? bypassW : inverterW;
+  if (limit > 0 && draw >= NEAR_LIMIT * limit && !(state.peakAt && updated - state.peakAt < PEAK_COOLDOWN_S)) {
     state.peakAt = updated;
     await save();
     const kw = (draw / 1000).toFixed(1).replace(".", ",");
     await sendMessage(env, gridOn
-      ? `⚠️ <b>З мережі йде ${kw} кВт</b> — близько до межі ~8 кВт, яку інвертор пропускає з мережі.\nЯкщо триматиметься довго, може вибити вступний автомат. Вимкніть щось потужне.`
-      : `⚠️ <b>Навантаження ${kw} кВт</b> — близько до межі інвертора 6 кВт.\nВін може вимкнути живлення квартири. Вимкніть щось потужне (бойлер, духовку, обігрівач).`);
+      ? `⚠️ <b>З мережі йде ${kw} кВт</b> — близько до межі ~${limit / 1000} кВт, яку інвертор пропускає з мережі.\nЯкщо триматиметься довго, може вибити вступний автомат. Вимкніть щось потужне.`
+      : `⚠️ <b>Навантаження ${kw} кВт</b> — близько до межі інвертора ${limit / 1000} кВт.\nВін може вимкнути живлення квартири. Вимкніть щось потужне (бойлер, духовку, обігрівач).`);
   }
   // 3) inverter heatsink too hot
   const dc = num("DC Temperature");
@@ -395,9 +423,9 @@ async function appExpiryReminder(env) {
 }
 
 /** Hours until the cut-off at a given draw in watts, or null when unknown / not discharging. */
-function runtimeHours(soc, watts) {
+function runtimeHours(soc, watts, wh = BATTERY_WH) {
   if (soc === null || soc === undefined || !(watts > 50)) return null;
-  return Math.max(0, ((soc - CUTOFF_SOC) / 100) * BATTERY_WH / watts);
+  return Math.max(0, ((soc - CUTOFF_SOC) / 100) * wh / watts);
 }
 
 async function checkDeyeAlerts(env, sn, nowSec) {
@@ -611,6 +639,7 @@ async function stOutageReminder(env, gridOn) {
 }
 
 async function handleCallback(q, env) {
+  if (String(q.data || "").startsWith("g:")) return guestCallback(q, env);
   const chat = q.message && q.message.chat && q.message.chat.id;
   if (String(chat) !== String(env.TELEGRAM_CHAT_ID)) return;  // only the owner's chat
   const [kind, action, id] = String(q.data || "").split(":");
@@ -637,10 +666,15 @@ async function handleCallback(q, env) {
 async function schedule(env) {
   if (!env.YASNO_GROUP) return null;
   const region = env.YASNO_REGION || "25", dso = env.YASNO_DSO || "902";
-  const resp = await fetch(`${YASNO_URL}/regions/${region}/dsos/${dso}/planned-outages`,
-                           { cf: { cacheTtl: 300, cacheEverything: true } });
-  if (!resp.ok) throw new Error(`YASNO HTTP ${resp.status}`);
-  const g = (await resp.json())[env.YASNO_GROUP];
+  const url = `${YASNO_URL}/regions/${region}/dsos/${dso}/planned-outages`;
+  let groups = env.YASNO_MEMO && env.YASNO_MEMO.get(url);  // guests' cron run shares one download
+  if (!groups) {
+    const resp = await fetch(url, { cf: { cacheTtl: 300, cacheEverything: true } });
+    if (!resp.ok) throw new Error(`YASNO HTTP ${resp.status}`);
+    groups = await resp.json();
+    if (env.YASNO_MEMO) env.YASNO_MEMO.set(url, groups);
+  }
+  const g = groups[env.YASNO_GROUP];
   if (!g) return null;
   const day = (d) => {
     if (!d) return null;
@@ -691,7 +725,7 @@ async function scheduleAlerts(env, state, save, ctx) {
     state.schedReminded = remindKey;
     await save();
     const outageH = (next[1] - next[0]) / 60;
-    const h = runtimeHours(soc, drawW);
+    const h = runtimeHours(soc, drawW, batteryWh(env));
     let battery = "";
     if (soc !== null) {
       battery = `\n🔋 Батарея ${soc}%` + (h === null ? "" : h >= outageH
@@ -710,12 +744,12 @@ async function liveData(env) {
   const nowSec = Date.now() / 1000;
   const [{ p, num, updated: collected }, history] = await Promise.all([
     deyeLatest(env),
-    deye(env, "/v1.0/device/historyRaw", { deviceSn: sn, measurePoints: ["GridVoltageL1L2"],
+    deye(env, "/v1.0/device/historyRaw", { deviceSn: sn, measurePoints: [gridVKey(env)],
                                            startTimestamp: Math.floor(nowSec - 86400),
                                            endTimestamp: Math.floor(nowSec) }).catch(() => null),
   ]);
   const updated = collected || null;
-  const voltage = num("GridVoltageL1L2");
+  const voltage = num(gridVKey(env));
   const gridOn = voltage !== null && voltage >= GRID_MIN_V;
 
   // since when the current state holds, from the last 24 h of 5-min history
@@ -734,8 +768,9 @@ async function liveData(env) {
   // off-grid the battery really gives the flat's load plus the inverter's own use (the power reading is noisy)
   const selfUse = await selfUseW(env);
   const drawW = bmsSilent ? null : gridOn ? batteryPower : Math.max(batteryPower, (num("TotalConsumptionPower") || 0) + selfUse);
-  const runtimeH = runtimeHours(soc, drawW);
+  const runtimeH = runtimeHours(soc, drawW, batteryWh(env));
   return {
+    limits: limits(env), batteryWh: batteryWh(env),
     now: nowSec, updated, stale: !updated || nowSec - updated > STALE_MIN * 60,
     gridOn, since, beyondDay, voltage, freq: num("GridFrequency"),
     gridPower: num("TotalGridPower"), load: num("TotalConsumptionPower"),
@@ -804,7 +839,7 @@ async function statusText(env) {
 }
 
 // ---------------------------------------------------------------- Mini App
-// Telegram signs initData with the bot token; only the owner may read the dashboard data.
+// Telegram signs initData with the bot token: returns the signed user id, or false.
 async function verifyInitData(initData, env) {
   if (!initData) return false;
   const params = new URLSearchParams(initData);
@@ -822,7 +857,7 @@ async function verifyInitData(initData, env) {
   if (!authDate || Date.now() / 1000 - authDate > 86400) return false;
   let user = null;
   try { user = JSON.parse(params.get("user") || "null"); } catch { return false; }
-  return !!user && String(user.id) === String(env.TELEGRAM_CHAT_ID);
+  return user && user.id ? String(user.id) : false;
 }
 
 // The iOS app has no Telegram signature: it sends a long random APP_TOKEN instead.
@@ -833,11 +868,23 @@ function appTokenOk(request, env) {
 
 /** The iOS app (APP_TOKEN) or the owner inside the Telegram Mini App (signed initData). */
 async function ownerOk(request, env) {
-  return appTokenOk(request, env) || verifyInitData(request.headers.get("X-Telegram-Init-Data"), env);
+  if (appTokenOk(request, env)) return true;
+  return (await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env)) === String(env.TELEGRAM_CHAT_ID);
 }
 
 async function dashboardData(request, env) {
-  if (!(await ownerOk(request, env))) return forbidden();
+  if (!(await ownerOk(request, env))) {
+    // a connected guest sees their own live state and schedule (no long history: that is the owner's workflow)
+    const uid = await verifyInitData(request.headers.get("X-Telegram-Init-Data"), env);
+    const genv = uid && (await guestEnvFor(env, uid));
+    if (!genv) return forbidden();
+    const [live, sched] = await Promise.all([
+      liveData(genv).catch((e) => ({ error: String(e.message || e.name) })),
+      schedule(genv).catch(() => null),
+    ]);
+    return jsonResponse({ live, data: null, generated_at: null, schedule: sched, guest: true },
+                        { "Cache-Control": "no-store" });
+  }
   const exp = Number(request.headers.get("X-App-Expires"));
   if (exp > 1.7e9 && exp < 2.2e9 && String(Math.round(exp)) !== (await env.KV.get("app_expires"))) {
     await env.KV.put("app_expires", String(Math.round(exp)));
@@ -895,3 +942,6 @@ function clock(ts) {
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
+// used by guests.js: guests run through the same code with their own env
+export { deye, esc, liveCheck, schedule, statusText };

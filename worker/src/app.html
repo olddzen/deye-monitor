@@ -185,7 +185,7 @@ async function load() {
   }
   if (!tg || !tg.initData) throw new Error("Відкрий дашборд через бота в Telegram");
   const r = await fetch("/api/data", { headers: { "X-Telegram-Init-Data": tg.initData } });
-  if (r.status === 403) throw new Error("Немає доступу: дашборд доступний лише власнику бота");
+  if (r.status === 403) throw new Error("Немає доступу. Спершу підключи свій Deye: напиши боту /start");
   if (!r.ok) throw new Error(`Помилка ${r.status}`);
   return r.json();
 }
@@ -322,11 +322,12 @@ function scheduleCard(S, L, D) {
 }
 
 // ---------- technical state in plain words
-const INVERTER_W = 6000, BYPASS_W = 8000;
+// the owner's 6 kW Deye; a guest's limits come with the data (0 = unknown)
 const watts = (w) => (Math.max(w, 0) < 1000 ? `${Math.round(Math.max(w, 0))} Вт` : `${n1(w / 1000)} кВт`);
 function tech(L) {
   if (!L || L.error) return "";
   const r = [], on = L.gridOn;
+  const lim = L.limits || { inverterW: 6000, bypassW: 8000 }, INV = lim.inverterW, BYP = lim.bypassW;
   const add = (t, v, note, lvl) => r.push({ t, v, note, lvl });
   if (on && L.voltage !== null) {
     const v = L.voltage, lvl = v >= 207 && v <= 253 ? "ok" : v < 195 || v > 260 ? "bad" : "warn";
@@ -340,12 +341,12 @@ function tech(L) {
     const closed = /pull|close/i.test(L.relay);
     add("Реле мережі", closed ? "замкнене" : "розімкнене", closed ? "квартира живиться від мережі напряму" : "інвертор відʼєднався від мережі — квартира на батареї", closed ? "ok" : on ? "warn" : "idle");
   }
-  if (on && L.gridPower !== null) {
-    const sh = Math.max(L.gridPower, 0) / BYPASS_W;
-    add("Запас потужності", `${watts(L.gridPower)} з ~8 кВт`, sh > 0.85 ? "майже межа — вимкни щось потужне" : "мережа йде через інвертор, запас є", sh > 0.85 ? "bad" : sh > 0.65 ? "warn" : "ok");
-  } else if (L.load !== null) {
-    const sh = L.load / INVERTER_W;
-    add("Запас потужності", `${watts(L.load)} з 6 кВт`, sh > 0.85 ? "майже межа — інвертор може вимкнутись" : "від батареї: до 6 кВт одночасно", sh > 0.85 ? "bad" : sh > 0.65 ? "warn" : "ok");
+  if (on && L.gridPower !== null && BYP > 0) {
+    const sh = Math.max(L.gridPower, 0) / BYP;
+    add("Запас потужності", `${watts(L.gridPower)} з ~${BYP / 1000} кВт`, sh > 0.85 ? "майже межа — вимкни щось потужне" : "мережа йде через інвертор, запас є", sh > 0.85 ? "bad" : sh > 0.65 ? "warn" : "ok");
+  } else if (!on && L.load !== null && INV > 0) {
+    const sh = L.load / INV;
+    add("Запас потужності", `${watts(L.load)} з ${INV / 1000} кВт`, sh > 0.85 ? "майже межа — інвертор може вимкнутись" : `від батареї: до ${INV / 1000} кВт одночасно`, sh > 0.85 ? "bad" : sh > 0.65 ? "warn" : "ok");
   }
   const b = L.battery || {};
   if (b.chargeLimitA !== null && b.chargeLimitA !== undefined) {
@@ -378,7 +379,7 @@ function tech(L) {
 function peaks(D) {
   const P = D && D.peaks30;
   if (!P || !P.days || !P.days.length) return "";
-  const inv = (P.inverter_w || INVERTER_W) / 1000, byp = (P.bypass_w || BYPASS_W) / 1000;
+  const inv = (P.inverter_w || 6000) / 1000, byp = (P.bypass_w || 8000) / 1000;
   const W = 320, H = 120, padB = 16, padL = 22, ymax = Math.max(byp, (P.max_w || 0) / 1000 + 0.5);
   const rows = P.days, bw = (W - padL) / rows.length, Y = (v) => (H - padB) * (1 - v / ymax);
   const bars = rows.map(([day, w, ts, near], i) => {
@@ -597,7 +598,7 @@ function footer(L) {
   const g = state.generated_at ? hm(state.generated_at) : "—";
   const l = L && L.updated ? hm(L.updated) : "—";
   const age = L && L.updated && L.now ? ` (${Math.max(0, Math.round((L.now - L.updated) / 60))} хв тому)` : "";
-  return `<footer>живі дані Deye на ${l}${age} · статистика на ${g}<br><button class="refresh" onclick="refresh()">↻ Оновити</button></footer>`;
+  return `<footer>живі дані Deye на ${l}${age}${state.data ? ` · статистика на ${g}` : ""}<br><button class="refresh" onclick="refresh()">↻ Оновити</button></footer>`;
 }
 
 // ---------- hover layer
