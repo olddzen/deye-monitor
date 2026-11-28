@@ -323,6 +323,8 @@ function scheduleCard(S, L, D) {
 
 // ---------- technical state in plain words
 // the owner's 6 kW Deye; a guest's limits come with the data (0 = unknown)
+/** "щохвилини" / "раз на ~5 хв" from the measured upload interval. */
+const everyText = (s) => (!s ? "раз на 1–5 хв" : s <= 90 ? "щохвилини" : `раз на ~${Math.round(s / 60)} хв`);
 const watts = (w) => (Math.max(w, 0) < 1000 ? `${Math.round(Math.max(w, 0))} Вт` : `${n1(w / 1000)} кВт`);
 function tech(L) {
   if (!L || L.error) return "";
@@ -398,7 +400,7 @@ function peaks(D) {
       <div class="sec" style="font-size:13px">${dmy(P.max_ts)} о ${hm(P.max_ts)} · ${P.max_on_grid ? `з мережі (межа ~${byp} кВт)` : `від батареї (межа ${inv} кВт)`}</div>` : ""}
     <div class="chart" style="margin-top:10px"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Піки потужності">${yt}${bars}${limit}</svg></div>
     <div style="margin-top:8px;font-weight:600;font-size:14px;color:${near ? "#b07800" : "var(--good-text)"}">${near ? `⚠️ Близько до межі: ${near} раз(и) — жовті дні` : "✅ Жодного разу не підходили до межі"}</div>
-    <div class="muted" style="font-size:12px;margin-top:6px">Зі світлом інвертор пропускає з мережі ~${byp} кВт, без світла віддає до ${inv} кВт. Deye записує дані раз на ~5 хв, тож короткі кидки сюди можуть не потрапити.</div>
+    <div class="muted" style="font-size:12px;margin-top:6px">Зі світлом інвертор пропускає з мережі ~${byp} кВт, без світла віддає до ${inv} кВт. Deye записує дані ${everyText(state.live && state.live.sampleS)}, тож короткі кидки сюди можуть не потрапити.</div>
   </section>`;
 }
 

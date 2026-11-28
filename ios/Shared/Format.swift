@@ -80,6 +80,12 @@ enum Fmt {
     /// Deye uploads about every 5 minutes; older than this means the picture may be out of date.
     static let staleAfter: TimeInterval = 12 * 60
 
+    /// "щохвилини" / "раз на ~5 хв" from the measured Deye upload interval.
+    static func every(_ seconds: Double?) -> String {
+        guard let s = seconds, s > 0 else { return "раз на 1–5 хв" }
+        return s <= 90 ? "щохвилини" : "раз на ~\(Int((s / 60).rounded())) хв"
+    }
+
     static func number(_ x: Double?, digits: Int = 1) -> String {
         guard let x else { return "—" }
         return numbers[min(max(digits, 0), 2)]?.string(from: NSNumber(value: x)) ?? "—"

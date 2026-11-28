@@ -81,7 +81,7 @@ def build_data(db: Storage, cfg, now: float) -> dict:
     drain = A.real_drain(per, bat.capacity_kwh or cfg.battery_kwh)
     gq = A.grid_quality(pts30, cfg.grid_voltage_min)
     coverage = sum(1 for p in pts30 if p.get("soc") is not None) / max(len(pts30), 1)
-    prev_cov = len(db.points_between(now - 14 * DAY, now - 7 * DAY)) / (7 * DAY / 300)
+    prev_cov = A.covered_seconds(db.points_between(now - 14 * DAY, now - 7 * DAY)) / (7 * DAY)
 
     # 7-day series, 10-minute buckets: [ts, soc, load, grid_v]
     series, bucket = [], None

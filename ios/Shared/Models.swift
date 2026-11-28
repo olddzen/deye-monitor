@@ -138,6 +138,7 @@ struct Live: Decodable {
     let today: TodayLive?
     let acTemp: Double?
     let relay: String?
+    let sampleS: Double?      // measured Deye upload interval, s
 
     var isStale: Bool { stale ?? (updated == nil) }
     var sinceDate: Date? { since.map { Date(timeIntervalSince1970: $0) } }

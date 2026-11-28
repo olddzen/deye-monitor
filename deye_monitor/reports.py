@@ -44,9 +44,9 @@ def build_report(db: Storage, cfg, start: float, end: float, title: str,
     gq = A.grid_quality(pts, cfg.grid_voltage_min)
     alerts = A.alert_counts(db.alerts_between(start, end), min_level=1)
 
-    expected = span / 300  # Deye stores a point every ~5 min
-    data_share = len(pts) / expected if expected else 0
-    prev_share = len(db.points_between(start - span, start)) / expected if expected else 0
+    # share of the period the data really covers (independent of the 1- or 5-minute upload interval)
+    data_share = A.covered_seconds(pts) / span if span else 0
+    prev_share = A.covered_seconds(db.points_between(start - span, start)) / span if span else 0
     lines = [f"📊 <b>{title}</b>"]
     if data_share < 0.8:
         lines.append(f"ℹ️ дані є лише за ~{min(data_share, 1) * span / 86400:.0f} з {span / 86400:.0f} днів")
@@ -195,7 +195,7 @@ def send_due_reports(db: Storage, cfg, now: float, send_text: Callable[[str], No
     sent = 0
     for key, start, end, title in due_reports(db, cfg, now):
         state_key = "last_weekly" if key.startswith("week:") else "last_monthly"
-        if len(db.points_between(start, end)) < 0.3 * (end - start) / 300:
+        if A.covered_seconds(db.points_between(start, end)) < 0.3 * (end - start):
             db.set_state(state_key, key)  # too little data for that period: skip silently
             continue
         text, png = build_report(db, cfg, start, end, title)

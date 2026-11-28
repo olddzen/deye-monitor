@@ -15,7 +15,7 @@ MAX_GAP = 1200  # s; a longer hole in the data is "no data", not a measurement
 def derive_outages(points: Sequence[dict], threshold: float, max_gap: int = MAX_GAP,
                    detailed: bool = False) -> list:
     """Outages from grid-voltage points. Edges are placed halfway between the last-on and first-off
-    points (±2.5 min at Deye's 5-min resolution); a trailing outage stays open (end None).
+    points (± half the upload interval: 2.5 min at 5-min uploads, 30 s at 1-min); a trailing outage stays open (end None).
     When an edge borders a hole in the data (> max_gap) the real outage may be longer: only the
     confirmed part is counted, and detailed=True adds an `uncertain` flag: (start, end, uncertain)."""
     out: list = []
@@ -44,6 +44,13 @@ def derive_outages(points: Sequence[dict], threshold: float, max_gap: int = MAX_
     if start is not None:
         out.append((start, None, unsure) if detailed else (start, None))
     return out
+
+
+def covered_seconds(points: Sequence[dict], max_gap: int = MAX_GAP) -> float:
+    """How much time the points really cover: the sum of gaps no longer than max_gap. Unlike a point
+    count it doesn't depend on how often Deye uploads (every 5 min or every minute)."""
+    ts = sorted(float(p["ts"]) for p in points)
+    return sum(b - a for a, b in zip(ts, ts[1:]) if 0 < b - a <= max_gap)
 
 
 def integrate_kwh(points: Sequence[dict], key: str, sign: int = 0, max_gap: int = MAX_GAP) -> float:
@@ -434,7 +441,7 @@ def real_drain(per_outage: Sequence[OutageBattery], capacity_kwh: float,
 
 def power_peaks(points: Sequence[dict], start: float, end: float, tz: str, threshold: float) -> dict:
     """Biggest draw per day and how often it came close to a limit (6 kW from the battery,
-    ~8 kW through the grid relay). Deye samples every ~5 min, so short spikes slip through."""
+    ~8 kW through the grid relay). Deye samples every 1–5 min, so short spikes slip through."""
     zone = ZoneInfo(tz)
     days: Dict[str, list] = {}
     near, top = 0, None

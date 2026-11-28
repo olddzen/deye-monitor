@@ -5,6 +5,7 @@ import SwiftUI
 /// so a moment like "boiler + charging + a power tool" is visible afterwards.
 struct PeaksCard: View {
     let peaks: Peaks
+    var sampleS: Double? = nil
 
     private var inverterKw: Double { (peaks.inverterW ?? 6000) / 1000 }
     private var bypassKw: Double { (peaks.bypassW ?? 8000) / 1000 }
@@ -55,7 +56,7 @@ struct PeaksCard: View {
                   systemImage: near == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(near == 0 ? Theme.good : Theme.warning)
-            Text("Зі світлом інвертор пропускає з мережі ~\(Fmt.number(bypassKw, digits: 0)) кВт, без світла віддає до \(Fmt.number(inverterKw, digits: 0)) кВт. Deye записує дані раз на ~5 хв, тож короткі кидки (пуск інструмента) сюди можуть не потрапити.")
+            Text("Зі світлом інвертор пропускає з мережі ~\(Fmt.number(bypassKw, digits: 0)) кВт, без світла віддає до \(Fmt.number(inverterKw, digits: 0)) кВт. Deye записує дані \(Fmt.every(sampleS)), тож короткі кидки (пуск інструмента) сюди можуть не потрапити.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .glassCard()

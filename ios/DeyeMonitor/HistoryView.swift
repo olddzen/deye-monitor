@@ -16,7 +16,7 @@ struct HistoryView: View {
                         ScheduleAccuracyCard(acc: acc)
                     }
                     if let peaks = stats.peaks30, peaks.maxW != nil {
-                        PeaksCard(peaks: peaks)
+                        PeaksCard(peaks: peaks, sampleS: store.response?.live?.sampleS)
                     }
                     if let ins = stats.insights, ins.weekKwh != nil {
                         ConsumptionCard(insights: ins, tariff: stats.energy30?.tariff)

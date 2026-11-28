@@ -143,7 +143,7 @@ struct TechStatusCard: View {
                 }
             }
             if let u = live.updatedDate {
-                Text("дані інвертора о \(Fmt.time(u)) · Deye оновлює їх раз на ~5 хв")
+                Text("дані інвертора о \(Fmt.time(u)) · Deye оновлює їх \(Fmt.every(live.sampleS))")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }

@@ -763,6 +763,10 @@ async function liveData(env) {
     if (i < 0) beyondDay = true;
     else since = (pts[i].t + pts[i + 1].t) / 2;
   }
+  // how often the stick really uploads (Deye can set 1 or 5 min): median of the latest gaps
+  const gaps = pts.slice(-13).map((d, i, a) => (i ? d.t - a[i - 1].t : 0)).slice(1).filter((g) => g > 0 && g <= 1200)
+    .sort((a, b) => a - b);
+  const sampleS = gaps.length ? Math.round(gaps[Math.floor(gaps.length / 2)]) : null;
   const { silent: bmsSilent, soc, temp: batteryTemp } = readBattery(num);
   const batteryPower = bmsSilent ? null : num("BatteryPower") || 0;
   // off-grid the battery really gives the flat's load plus the inverter's own use (the power reading is noisy)
@@ -771,7 +775,7 @@ async function liveData(env) {
   const runtimeH = runtimeHours(soc, drawW, batteryWh(env));
   return {
     limits: limits(env), batteryWh: batteryWh(env),
-    now: nowSec, updated, stale: !updated || nowSec - updated > STALE_MIN * 60,
+    now: nowSec, updated, sampleS, stale: !updated || nowSec - updated > STALE_MIN * 60,
     gridOn, since, beyondDay, voltage, freq: num("GridFrequency"),
     gridPower: num("TotalGridPower"), load: num("TotalConsumptionPower"),
     soc, batteryPower, drawW, selfUseW: selfUse, runtimeH,

@@ -1,6 +1,6 @@
 """Deye Cloud OpenAPI reader (https://developer.deyecloud.com) — works without any device at home.
 
-The logger uploads data to Deye Cloud every ~5 minutes; we poll the cloud and turn the latest
+The logger uploads data to Deye Cloud every 1–5 minutes; we poll the cloud and turn the latest
 upload into a Reading. Grid voltage comes from /device/latest; if that key can't be found,
 grid presence falls back to grid power from /station/latest.
 """

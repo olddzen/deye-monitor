@@ -39,3 +39,14 @@ class PowerPeaksTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_covered_seconds_ignores_upload_interval():
+    from deye_monitor.analytics import covered_seconds
+    hour = 3600
+    five = [{"ts": t} for t in range(0, hour + 1, 300)]
+    one = [{"ts": t} for t in range(0, hour + 1, 60)]
+    assert covered_seconds(five) == hour == covered_seconds(one)
+    # a hole longer than MAX_GAP is not "covered"
+    holey = [{"ts": t} for t in range(0, 601, 60)] + [{"ts": t} for t in range(3000, 3601, 60)]
+    assert covered_seconds(holey) == 1200
